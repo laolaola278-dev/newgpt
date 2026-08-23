@@ -1,0 +1,9 @@
+node_modules/
+.output/
+.wxt/
+native-host/target/
+stats.html
+*.log
+.DS_Store
+.env
+.env.*
