@@ -13,7 +13,7 @@ use crate::errors::{
 };
 use crate::tools::echo;
 
-pub const HOST_NAME: &str = "gptpp-native";
+pub const HOST_NAME: &str = "com.gptpp.native";
 pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_VERSION: u64 = 1;
 

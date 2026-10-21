@@ -238,13 +238,23 @@ describe('Agent Loop integration', () => {
     h.adapter.dispose();
   });
 
-  it('cancel() stops the loop and pending results are discarded', async () => {
-    let resolveExec!: (reply: ExecutorReply) => void;
+  it('cancel() stops the loop without unhandled rejections and start() / new user turns re-arm it', async () => {
+    let calls = 0;
+    let resolveFirst!: (reply: ExecutorReply) => void;
     const h = setup({
-      executeTool: () =>
-        new Promise<ExecutorReply>((resolve) => {
-          resolveExec = resolve;
-        }),
+      executeTool: (payload) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<ExecutorReply>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        return Promise.resolve({
+          status: 'ok',
+          result: { text: payload.call.arguments['text'] },
+          durationMs: 1,
+        });
+      },
     });
 
     await assistantSays(envelope('call_cancel', '{"name":"demo_echo","arguments":{"text":"x"}}'));
@@ -255,7 +265,7 @@ describe('Agent Loop integration', () => {
     });
 
     h.controller.cancel();
-    resolveExec({ status: 'ok', result: { text: 'late' }, durationMs: 0 });
+    resolveFirst({ status: 'ok', result: { text: 'late' }, durationMs: 0 });
     await new Promise((r) => setTimeout(r, 80));
 
     expect(h.controller.snapshot().state).toBe('CANCELLED');
@@ -263,6 +273,49 @@ describe('Agent Loop integration', () => {
     expect(document.getElementById('prompt-textarea')!.textContent ?? '').not.toContain(
       '[GPT++ TOOL RESULT]',
     );
+
+    // Explicit start() revives a cancelled controller cleanly.
+    h.controller.start();
+    expect(h.controller.snapshot().state).toBe('OBSERVING');
+
+    await assistantSays(envelope('call_after_resume', '{"name":"demo_echo","arguments":{"text":"resumed"}}'));
+    await vi.waitFor(() => {
+      expect(h.sendClicks()).toBe(1);
+    });
+    expect(document.getElementById('prompt-textarea')!.textContent).toContain('resumed');
+
+    h.controller.dispose();
+    h.adapter.dispose();
+  });
+
+  it('never re-executes historical tool calls when opening an existing conversation', async () => {
+    const h = setup();
+
+    // Simulate SPA hydration of a finished historical conversation.
+    appendMessage({
+      role: 'user',
+      id: 'hist-u1',
+      text: 'Test echo please',
+    });
+    appendMessage({
+      role: 'assistant',
+      id: 'hist-a1',
+      text: envelope('hist_call_1', '{"name":"demo_echo","arguments":{"text":"old"}}'),
+    });
+    appendMessage({
+      role: 'user',
+      id: 'hist-u2',
+      text: '[GPT++ TOOL RESULT]\ntool: demo_echo\ncall_id: hist_call_1\n\nresult:\n{"text":"old"}\n\n[/GPT++ TOOL RESULT]',
+    });
+    appendMessage({
+      role: 'assistant',
+      id: 'hist-a2',
+      text: 'Echo succeeded earlier.',
+    });
+    pulseObserver();
+
+    await new Promise((r) => setTimeout(r, 140));
+    expect(h.sendClicks()).toBe(0);
 
     h.controller.dispose();
     h.adapter.dispose();

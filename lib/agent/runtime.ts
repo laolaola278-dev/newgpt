@@ -1,15 +1,17 @@
 /**
  * Runtime executor — the routing pipeline every tool call passes through:
  *
- *   registry lookup → schema validation → permission handshake → execute
+ *   envelope shape → registry lookup → schema validation → permission → execute
  *
  * This module runs inside the background service worker in production and
  * directly in unit tests. It never sees DOM and never evaluates page text.
  */
 
-import { validateArgumentsAgainstSchema } from './tool-call/validator';
 import {
-  defaultAskResolver,
+  validateArgumentsAgainstSchema,
+  validateToolCall,
+} from './tool-call/validator';
+import {
   defaultPermissionPolicy,
   type AskResolver,
   type PermissionDecision,
@@ -65,21 +67,35 @@ export type ToolExecutor = (payload: ToolExecutePayload) => Promise<ExecutorRepl
 
 export function createToolExecutor(config: RuntimeConfig): ToolExecutor {
   const policy = config.policy ?? defaultPermissionPolicy;
-  const resolveAsk = config.resolveAsk ?? defaultAskResolver;
   const timeoutMs = config.toolTimeoutMs ?? 10_000;
 
   return async (payload): Promise<ExecutorReply> => {
     const { call } = payload;
 
-    const tool = config.registry.get(call.name);
-    if (!tool) {
+    const shapeCheck = validateToolCall(call.name, call.arguments);
+    if (!shapeCheck.ok) {
       return {
         status: 'error',
-        error: { code: 'UNKNOWN_TOOL', message: `Unknown GPT++ tool: ${call.name}` },
+        error: {
+          code: 'INVALID_ARGUMENTS',
+          message: shapeCheck.message,
+        },
       };
     }
 
-    const schemaCheck = validateArgumentsAgainstSchema(call.arguments, tool.inputSchema);
+    const tool = config.registry.get(shapeCheck.value.name);
+    if (!tool) {
+      return {
+        status: 'error',
+        error: {
+          code: 'UNKNOWN_TOOL',
+          message: `Unknown GPT++ tool: ${shapeCheck.value.name}`,
+        },
+      };
+    }
+
+    const validArgs = shapeCheck.value.arguments;
+    const schemaCheck = validateArgumentsAgainstSchema(validArgs, tool.inputSchema);
     if (!schemaCheck.ok) {
       return {
         status: 'error',
@@ -100,7 +116,10 @@ export function createToolExecutor(config: RuntimeConfig): ToolExecutor {
     if (decision === 'deny') {
       return {
         status: 'error',
-        error: { code: 'PERMISSION_DENIED', message: `Tool "${call.name}" was denied by policy` },
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: `Tool "${tool.name}" was denied by policy`,
+        },
       };
     }
 
@@ -126,13 +145,13 @@ export function createToolExecutor(config: RuntimeConfig): ToolExecutor {
           },
         };
       }
-      return config.nativeBridge.execute(tool.name, call.arguments);
+      return config.nativeBridge.execute(tool.name, validArgs);
     }
 
     const outcome: ToolOutcome = await withTimeout<ToolOutcome>(
       (async () => {
         try {
-          const result = await tool.execute(call.arguments);
+          const result = await tool.execute(validArgs);
           return { status: 'ok', result, durationMs: Date.now() - startedAt };
         } catch (err) {
           return {
@@ -145,7 +164,10 @@ export function createToolExecutor(config: RuntimeConfig): ToolExecutor {
         }
       })(),
       timeoutMs,
-      () => ({ status: 'error', error: { code: 'TIMEOUT', message: `tool exceeded ${timeoutMs}ms` } }),
+      () => ({
+        status: 'error',
+        error: { code: 'TIMEOUT', message: `tool exceeded ${timeoutMs}ms` },
+      }),
     );
 
     return outcome.status === 'ok'

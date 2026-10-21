@@ -32,16 +32,20 @@ function hashContent(s: string): string {
   return h.toString(36).padStart(7, '0');
 }
 
-const KNOWN_ROLES: readonly ChatGPTMessageRole[] = ['user', 'assistant'];
+const KNOWN_ROLES: readonly ChatGPTMessageRole[] = ['user', 'assistant', 'system'];
+
+function resolveAttribute(el: HTMLElement, attr: string): string | null {
+  return el.getAttribute(attr) ?? el.closest(`[${attr}]`)?.getAttribute(attr) ?? null;
+}
 
 export function parseMessage(el: HTMLElement, index: number, streaming: boolean): ChatGPTMessage {
-  const roleAttr = el.getAttribute('data-message-author-role');
+  const roleAttr = resolveAttribute(el, 'data-message-author-role');
   const role =
     roleAttr !== null && (KNOWN_ROLES as readonly string[]).includes(roleAttr)
       ? (roleAttr as ChatGPTMessageRole)
       : 'unknown';
   const content = extractText(el);
-  const domId = el.getAttribute('data-message-id');
+  const domId = resolveAttribute(el, 'data-message-id');
   return {
     id: domId ?? `${role}-${index}-${hashContent(content)}`,
     role,
@@ -52,5 +56,18 @@ export function parseMessage(el: HTMLElement, index: number, streaming: boolean)
 }
 
 export function listMessages(doc: Document, streaming: boolean): ChatGPTMessage[] {
-  return findMessageElements(doc).map((el, i) => parseMessage(el, i, streaming));
+  const elements = findMessageElements(doc);
+  let lastAssistantIdx = -1;
+  if (streaming) {
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const el = elements[i];
+      if (el && resolveAttribute(el, 'data-message-author-role') === 'assistant') {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+  }
+  return elements.map((el, i) =>
+    parseMessage(el, i, streaming && i === lastAssistantIdx),
+  );
 }

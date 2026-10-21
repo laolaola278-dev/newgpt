@@ -70,4 +70,18 @@ describe('validateArgumentsAgainstSchema', () => {
     };
     expect(validateArgumentsAgainstSchema({ whatever: 1 }, open).ok).toBe(true);
   });
+
+  it('validates array element types when items is specified', () => {
+    const withItems: InputSchema = {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['paths'],
+      additionalProperties: false,
+    };
+    expect(validateArgumentsAgainstSchema({ paths: ['a.ts', 'b.ts'] }, withItems).ok).toBe(true);
+    const bad = validateArgumentsAgainstSchema({ paths: ['a.ts', 99] }, withItems);
+    expect(!bad.ok && bad.code).toBe('ARGUMENT_TYPE');
+  });
 });

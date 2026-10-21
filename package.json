@@ -6,18 +6,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "wxt prepare",
     "dev": "wxt",
     "build": "wxt build",
     "zip": "wxt zip",
-    "compile": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "spawn-sync"
-    ]
+    "compile": "wxt prepare && tsc --noEmit",
+    "test": "wxt prepare && vitest run",
+    "test:watch": "wxt prepare && vitest"
   },
   "dependencies": {
     "react": "^19.2.0",

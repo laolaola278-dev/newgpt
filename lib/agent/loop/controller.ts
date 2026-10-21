@@ -12,7 +12,7 @@
 import type { ChatGPTAdapter } from '@/lib/chatgpt/adapter';
 import { StreamingToolCallParser } from '../tool-call/parser';
 import type { ToolCall } from '../tool-call/types';
-import { formatToolResultBlock } from '../format';
+import { extractCompletedCallIds, formatToolResultBlock } from '../format';
 import { AgentStateMachine, type AgentState } from '../state';
 import type { ExecutorReply, ToolExecutePayload, ToolOutcome } from '../tools/types';
 import {
@@ -107,25 +107,34 @@ export class AgentLoopController {
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   start(): void {
-    if (this.started) return;
-    this.started = true;
     this.cancelled = false;
-    const { adapter } = this.deps;
+    this.syncHistoricalCallIds();
 
-    const onAdded = (p: { message: { role: string; content: string; element?: HTMLElement } }) =>
-      this.onAssistantAdded(p.message.role, p.message.content, p.message.element);
-    const onUpdated = (p: { message: { role: string; content: string; element?: HTMLElement } }) =>
-      this.onAssistantUpdated(p.message.role, p.message.content, p.message.element);
-    const onStreamEnd = () => void this.drain();
-    const onNav = () => this.onNavigation();
+    if (!this.started) {
+      this.started = true;
+      const { adapter } = this.deps;
 
-    this.offs.push(
-      adapter.on('message-added', onAdded),
-      adapter.on('message-updated', onUpdated),
-      adapter.on('stream-end', onStreamEnd),
-      adapter.on('navigation', onNav),
-    );
-    if (this.sm.state === 'IDLE' || this.sm.state === 'COMPLETED' || this.sm.state === 'CANCELLED') {
+      const onAdded = (p: { message: { role: string; content: string; element?: HTMLElement } }) =>
+        this.onAssistantAdded(p.message.role, p.message.content, p.message.element);
+      const onUpdated = (p: { message: { role: string; content: string; element?: HTMLElement } }) =>
+        this.onAssistantUpdated(p.message.role, p.message.content, p.message.element);
+      const onStreamEnd = () => void this.drain();
+      const onNav = () => this.onNavigation();
+
+      this.offs.push(
+        adapter.on('message-added', onAdded),
+        adapter.on('message-updated', onUpdated),
+        adapter.on('stream-end', onStreamEnd),
+        adapter.on('navigation', onNav),
+      );
+    }
+
+    if (
+      this.sm.state === 'IDLE' ||
+      this.sm.state === 'COMPLETED' ||
+      this.sm.state === 'CANCELLED' ||
+      this.sm.state === 'FAILED'
+    ) {
       this.transition('OBSERVING');
     }
   }
@@ -133,7 +142,9 @@ export class AgentLoopController {
   cancel(): void {
     this.cancelled = true;
     this.queue = [];
-    this.transition('CANCELLED');
+    if (this.sm.state !== 'CANCELLED') {
+      this.transition('CANCELLED');
+    }
   }
 
   dispose(): void {
@@ -161,15 +172,34 @@ export class AgentLoopController {
 
   // ── observation ──────────────────────────────────────────────────────────
 
-  private onUserMessage(): void {
+  private syncHistoricalCallIds(): void {
+    for (const msg of this.deps.adapter.getMessages()) {
+      if (msg.role === 'user') {
+        for (const id of extractCompletedCallIds(msg.content)) {
+          this.rememberCallId(id);
+        }
+      }
+    }
+  }
+
+  private onUserMessage(content: string): void {
+    for (const id of extractCompletedCallIds(content)) {
+      this.rememberCallId(id);
+    }
     if (this.injecting) return; // our own injected result — not a new turn
     // Real ChatGPT renders the injected message asynchronously; ignore any
     // user message arriving shortly after our own injection.
     if (Date.now() - this.lastInjectionAt < 1500) return;
+    this.cancelled = false;
     this.steps = 0;
     this.parser.reset();
     this.activeAssistantEl = null;
-    if (this.sm.state === 'COMPLETED' || this.sm.state === 'IDLE') {
+    if (
+      this.sm.state === 'COMPLETED' ||
+      this.sm.state === 'IDLE' ||
+      this.sm.state === 'CANCELLED' ||
+      this.sm.state === 'FAILED'
+    ) {
       this.transition('OBSERVING');
     }
   }
@@ -179,12 +209,23 @@ export class AgentLoopController {
     content: string,
     element?: HTMLElement,
   ): void {
-    if (this.cancelled || !this.started) return;
+    if (!this.started) return;
     if (role === 'user') {
-      this.onUserMessage();
+      this.onUserMessage(content);
       return;
     }
-    if (role !== 'assistant') return;
+    if (this.cancelled || role !== 'assistant') return;
+
+    this.syncHistoricalCallIds();
+
+    // Historical assistant messages followed by newer messages in the thread
+    // (e.g. during SPA navigation / hydration) must never re-execute.
+    if (element) {
+      const messages = this.deps.adapter.getMessages();
+      const tail = messages[messages.length - 1];
+      if (tail?.element && tail.element !== element) return;
+    }
+
     // A brand-new assistant message always starts a fresh parse buffer.
     this.parser.reset();
     this.activeAssistantEl = element ?? null;
@@ -235,11 +276,12 @@ export class AgentLoopController {
   }
 
   private onNavigation(): void {
+    this.cancelled = false;
     this.parser.reset();
     this.queue = [];
     this.steps = 0;
     this.activeAssistantEl = null;
-    if (this.sm.isActive() && this.sm.state !== 'CANCELLED') {
+    if (this.sm.state !== 'OBSERVING') {
       this.transition('OBSERVING');
     }
   }
@@ -285,6 +327,7 @@ export class AgentLoopController {
   }
 
   private async handleCall(call: ToolCall): Promise<void> {
+    if (this.cancelled) return;
     this.transition('TOOL_DETECTED');
     this.emitter.emit('tool-started', { call });
     const startedAt = Date.now();
@@ -301,6 +344,7 @@ export class AgentLoopController {
         },
       };
     }
+    if (this.cancelled) return;
 
     // Permission handshake.
     if (reply.status === 'permission_required') {
@@ -322,6 +366,7 @@ export class AgentLoopController {
           error: { code: 'PERMISSION_DENIED', message: `Tool "${call.name}" was denied by the user` },
         };
       } else {
+        this.transition('EXECUTING');
         try {
           reply = await this.callExecutor({ call, confirmPermission: true });
         } catch (err) {
@@ -333,6 +378,7 @@ export class AgentLoopController {
             },
           };
         }
+        if (this.cancelled) return;
       }
     } else {
       this.transition('EXECUTING');
@@ -341,7 +387,7 @@ export class AgentLoopController {
     const durationMs = Date.now() - startedAt;
     const outcome: ToolOutcome =
       reply.status === 'ok'
-        ? { status: 'ok', result: reply.result, durationMs: reply.durationMs }
+        ? { status: 'ok', result: reply.result, durationMs: reply.durationMs ?? durationMs }
         : reply.status === 'error'
           ? { status: 'error', error: reply.error }
           : {
@@ -365,6 +411,7 @@ export class AgentLoopController {
       this.injecting = false;
       this.lastInjectionAt = Date.now();
     }
+    if (this.cancelled) return;
 
     this.lastTool = {
       callId: call.id,

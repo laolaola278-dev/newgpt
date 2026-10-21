@@ -1,9 +1,8 @@
 import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
+import { CHATGPT_MATCH_PATTERNS } from './lib/chatgpt-detect';
 
 // GPT++ — ChatGPT Web Agent Enhancement Extension.
-// Phase 0: minimal loadable extension (content script on chatgpt.com,
-// side panel, options page). Agent Runtime lands in later phases.
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
@@ -11,7 +10,7 @@ export default defineConfig({
     description:
       'Give ChatGPT Web a local Coding Agent body: filesystem, shell, git.',
     permissions: ['storage', 'tabs', 'sidePanel', 'nativeMessaging'],
-    host_permissions: ['https://chatgpt.com/*'],
+    host_permissions: CHATGPT_MATCH_PATTERNS,
     action: { default_title: 'Open GPT++ panel' },
     icons: {
       16: '/icons/gptpp-16.png',

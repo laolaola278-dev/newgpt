@@ -114,17 +114,32 @@ export class StreamingToolCallParser {
         continue;
       }
 
+      if (typeof shaped.name !== 'string' || shaped.name.trim().length === 0) {
+        fail('INVALID_JSON', 'tool call requires a non-empty string "name"');
+        continue;
+      }
+
+      const rawArgs = shaped.arguments;
+      if (
+        rawArgs !== undefined &&
+        rawArgs !== null &&
+        (typeof rawArgs !== 'object' || Array.isArray(rawArgs))
+      ) {
+        fail('INVALID_JSON', 'tool call "arguments" must be a JSON object');
+        continue;
+      }
+
       calls.push({
         id: attrId,
-        name: String(shaped.name ?? ''),
+        name: shaped.name,
         arguments:
-          typeof shaped.arguments === 'object' && shaped.arguments !== null
-            ? (shaped.arguments as Record<string, unknown>)
+          typeof rawArgs === 'object' && rawArgs !== null
+            ? (rawArgs as Record<string, unknown>)
             : {},
       });
     }
 
-    if (this.status !== 'INVALID') this.status = this.computeStatus(calls.length > 0);
+    if (issues.length === 0) this.status = this.computeStatus(calls.length > 0);
     return { calls, issues };
   }
 

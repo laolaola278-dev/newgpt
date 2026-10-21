@@ -102,4 +102,17 @@ describe('StreamingToolCallParser', () => {
     const next = p.feed(ECHO);
     expect(next.calls).toHaveLength(1);
   });
+
+  it('rejects array or primitive arguments and recovers status on later valid envelopes', () => {
+    const p = new StreamingToolCallParser();
+    const bad = envelope('call_arr', '{"name":"demo_echo","arguments":["bad"]}');
+    const r1 = p.feed(bad);
+    expect(r1.calls).toHaveLength(0);
+    expect(r1.issues[0]?.code).toBe('INVALID_JSON');
+    expect(p.getStatus()).toBe('INVALID');
+
+    const r2 = p.feed(`${bad}\n${ECHO}`);
+    expect(r2.calls).toHaveLength(1);
+    expect(p.getStatus()).toBe('COMPLETE');
+  });
 });

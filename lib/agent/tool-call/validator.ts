@@ -100,6 +100,17 @@ export function validateArgumentsAgainstSchema(
         message: `argument "${key}" must be of type ${prop.type}`,
       };
     }
+    if (prop.type === 'array' && prop.items && Array.isArray(value)) {
+      for (const item of value) {
+        if (!matchesType(item, prop.items.type)) {
+          return {
+            ok: false,
+            code: 'ARGUMENT_TYPE',
+            message: `items of "${key}" must be of type ${prop.items.type}`,
+          };
+        }
+      }
+    }
   }
   return { ok: true, value: true };
 }
