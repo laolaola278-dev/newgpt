@@ -8,6 +8,7 @@ import { demoEchoTool } from './demo-echo';
 import { nativeEchoTool } from './native-echo';
 import { filesystemTools } from './fs';
 import { gitTools } from './git';
+import { browserTools, mcpTools } from './mcp';
 import { memoryTools, skillTools } from './memory';
 import { shellExecTool } from './shell';
 
@@ -61,5 +62,11 @@ for (const tool of memoryTools) {
   defaultRegistry.register(tool);
 }
 for (const tool of skillTools) {
+  defaultRegistry.register(tool);
+}
+for (const tool of mcpTools) {
+  defaultRegistry.register(tool);
+}
+for (const tool of browserTools) {
   defaultRegistry.register(tool);
 }

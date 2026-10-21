@@ -1,9 +1,11 @@
 /**
- * GPT++ Options — workspace boundary, 5-scope permission matrix & native host diagnostics.
+ * GPT++ Options — workspace boundary, 5-scope permission matrix, local MCP
+ * server allowlist & native host diagnostics.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
+import type { McpServerConfig } from '@/lib/agent/mcp/store';
 import {
   ALL_PERMISSION_SCOPES,
   DEFAULT_SCOPE_POLICY,
@@ -39,6 +41,9 @@ export function App() {
   const [saved, setSaved] = useState(false);
   const [native, setNative] = useState<NativeHostStatus | null>(null);
   const [policy, setPolicy] = useState<ScopePolicyMap>({ ...DEFAULT_SCOPE_POLICY });
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+  const [mcpId, setMcpId] = useState('');
+  const [mcpCommandLine, setMcpCommandLine] = useState('');
   const [probing, setProbing] = useState(false);
 
   const probeNative = useCallback(async (force = false) => {
@@ -57,13 +62,17 @@ export function App() {
     }
   }, []);
 
-  const loadPermissions = useCallback(async () => {
+  const loadPermissionsAndMcp = useCallback(async () => {
     try {
-      const raw: unknown = await browser.runtime.sendMessage(
-        createRequest('permissions_state'),
-      );
-      if (isResponse(raw) && raw.ok) {
-        setPolicy((raw.result as PermissionSnapshot).policy);
+      const [permRaw, mcpRaw] = await Promise.all([
+        browser.runtime.sendMessage(createRequest('permissions_state')),
+        browser.runtime.sendMessage(createRequest('mcp_servers_list')),
+      ]);
+      if (isResponse(permRaw) && permRaw.ok) {
+        setPolicy((permRaw.result as PermissionSnapshot).policy);
+      }
+      if (isResponse(mcpRaw) && mcpRaw.ok) {
+        setMcpServers((mcpRaw.result as { servers: McpServerConfig[] }).servers);
       }
     } catch {
       /* ignore */
@@ -79,8 +88,8 @@ export function App() {
       })
       .finally(() => setLoaded(true));
     void probeNative(false);
-    void loadPermissions();
-  }, [probeNative, loadPermissions]);
+    void loadPermissionsAndMcp();
+  }, [probeNative, loadPermissionsAndMcp]);
 
   const save = async () => {
     const trimmed = root.trim();
@@ -104,13 +113,46 @@ export function App() {
     }
   };
 
+  const addMcpServer = async () => {
+    const id = mcpId.trim();
+    const tokens = mcpCommandLine.trim().split(/\s+/).filter(Boolean);
+    if (!id || tokens.length === 0) return;
+    const [command, ...args] = tokens;
+    const raw: unknown = await browser.runtime.sendMessage(
+      createRequest('mcp_servers_upsert', { id, name: id, command, args }),
+    );
+    if (isResponse(raw) && raw.ok) {
+      setMcpServers((raw.result as { servers: McpServerConfig[] }).servers);
+      setMcpId('');
+      setMcpCommandLine('');
+    }
+  };
+
+  const toggleMcpServer = async (id: string, enabled: boolean) => {
+    const raw: unknown = await browser.runtime.sendMessage(
+      createRequest('mcp_servers_toggle', { id, enabled }),
+    );
+    if (isResponse(raw) && raw.ok) {
+      setMcpServers((raw.result as { servers: McpServerConfig[] }).servers);
+    }
+  };
+
+  const removeMcpServer = async (id: string) => {
+    const raw: unknown = await browser.runtime.sendMessage(
+      createRequest('mcp_servers_remove', { id }),
+    );
+    if (isResponse(raw) && raw.ok) {
+      setMcpServers((raw.result as { servers: McpServerConfig[] }).servers);
+    }
+  };
+
   const version = browser.runtime.getManifest().version;
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-200 antialiased">
-      <div className="mx-auto max-w-2xl px-8 py-10">
+      <div className="mx-auto max-w-2xl px-8 py-9">
         {/* Header */}
-        <header className="flex items-center justify-between border-b border-white/[0.08] pb-6">
+        <header className="flex items-center justify-between border-b border-white/[0.08] pb-5">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-sky-400/25 bg-gradient-to-br from-slate-900 to-sky-950 text-sky-300">
               <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
@@ -127,7 +169,7 @@ export function App() {
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Workspace confinement, 5-scope permission matrix & Native Host bridge
+                Workspace confinement, 5-scope permissions, MCP servers & Native Host
               </p>
             </div>
           </div>
@@ -137,7 +179,7 @@ export function App() {
         </header>
 
         {/* Workspace Confinement */}
-        <section className="mt-6 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
+        <section className="mt-5 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
           <div>
             <label
               htmlFor="workspace-root"
@@ -146,12 +188,12 @@ export function App() {
               Workspace Confinement Root
             </label>
             <p className="mt-1 text-xs leading-relaxed text-slate-400">
-              Absolute directory boundary that local filesystem, git, and shell tools
-              may access. Path traversal outside this root is strictly rejected.
+              Absolute directory boundary enforced by both Extension and Rust Native Host
+              across filesystem, git, shell, and MCP tools.
             </p>
           </div>
 
-          <div className="mt-4 flex gap-2.5">
+          <div className="mt-3.5 flex gap-2.5">
             <input
               id="workspace-root"
               type="text"
@@ -163,13 +205,13 @@ export function App() {
               }}
               disabled={!loaded}
               spellCheck={false}
-              className="min-w-0 flex-1 rounded-xl border border-white/[0.1] bg-[#090d16] px-3.5 py-2.5 font-mono text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-sky-400/60"
+              className="min-w-0 flex-1 rounded-xl border border-white/[0.1] bg-[#090d16] px-3.5 py-2 font-mono text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-sky-400/60"
             />
             <button
               type="button"
               onClick={() => void save()}
               disabled={!loaded}
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-sky-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 active:scale-[0.98] disabled:opacity-50"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-sky-400 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 active:scale-[0.98] disabled:opacity-50"
             >
               {saved ? (
                 <>
@@ -192,14 +234,14 @@ export function App() {
         </section>
 
         {/* Granular 5-Scope Permission Matrix */}
-        <section className="mt-5 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
+        <section className="mt-4 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-100">
                 Granular Permission Matrix
               </h2>
               <p className="mt-0.5 text-xs text-slate-400">
-                Control default behavior per capability scope (Ask prompts inside the Side Panel)
+                Default policy per capability scope (Ask prompts interactively in Side Panel)
               </p>
             </div>
             <button
@@ -207,7 +249,7 @@ export function App() {
               onClick={() =>
                 void browser.runtime
                   .sendMessage(createRequest('permissions_reset_session'))
-                  .then(() => loadPermissions())
+                  .then(() => loadPermissionsAndMcp())
               }
               className="shrink-0 whitespace-nowrap rounded-xl border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/[0.08]"
             >
@@ -215,11 +257,11 @@ export function App() {
             </button>
           </div>
 
-          <div className="mt-4 divide-y divide-white/[0.06] rounded-xl border border-white/[0.06] bg-[#090d16] px-4">
+          <div className="mt-3.5 divide-y divide-white/[0.06] rounded-xl border border-white/[0.06] bg-[#090d16] px-4">
             {ALL_PERMISSION_SCOPES.map((scope) => (
               <div
                 key={scope}
-                className="flex items-center justify-between gap-4 py-3"
+                className="flex items-center justify-between gap-4 py-2.5"
               >
                 <div className="min-w-0">
                   <span className="font-mono text-xs font-bold text-sky-300">
@@ -258,8 +300,86 @@ export function App() {
           </div>
         </section>
 
+        {/* Local MCP Server Ecosystem (Phase 8) */}
+        <section className="mt-4 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">
+              Local MCP Server Allowlist (Stdio JSON-RPC)
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Allowlisted MCP servers bridged locally through <code className="font-mono text-sky-300">gptpp-native</code> (MCP 2024-11-05)
+            </p>
+          </div>
+
+          <div className="mt-3.5 flex gap-2">
+            <input
+              type="text"
+              value={mcpId}
+              placeholder="server-id (e.g. sqlite)"
+              onChange={(e) => setMcpId(e.target.value)}
+              spellCheck={false}
+              className="w-40 shrink-0 rounded-xl border border-white/[0.1] bg-[#090d16] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-400/60"
+            />
+            <input
+              type="text"
+              value={mcpCommandLine}
+              placeholder="npx -y @modelcontextprotocol/server-memory"
+              onChange={(e) => setMcpCommandLine(e.target.value)}
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-xl border border-white/[0.1] bg-[#090d16] px-3 py-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-400/60"
+            />
+            <button
+              type="button"
+              onClick={() => void addMcpServer()}
+              className="shrink-0 whitespace-nowrap rounded-xl border border-sky-400/30 bg-sky-500/15 px-3.5 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/25"
+            >
+              Add Server
+            </button>
+          </div>
+
+          {mcpServers.length > 0 && (
+            <div className="mt-3 divide-y divide-white/[0.06] rounded-xl border border-white/[0.06] bg-[#090d16] px-3.5">
+              {mcpServers.map((srv) => (
+                <div
+                  key={srv.id}
+                  className="flex items-center justify-between gap-3 py-2.5 text-xs"
+                >
+                  <div className="min-w-0">
+                    <span className="font-mono font-semibold text-sky-300">
+                      {srv.id}
+                    </span>
+                    <p className="truncate font-mono text-[11px] text-slate-400">
+                      {[srv.command, ...srv.args].join(' ')}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void toggleMcpServer(srv.id, !srv.enabled)}
+                      className={`rounded-md px-2.5 py-1 font-mono text-[10px] uppercase ${
+                        srv.enabled
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-white/[0.05] text-slate-400'
+                      }`}
+                    >
+                      {srv.enabled ? 'enabled' : 'disabled'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeMcpServer(srv.id)}
+                      className="rounded-md px-2 py-1 font-mono text-[10px] text-rose-300 hover:bg-rose-500/15"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         {/* Native Host Bridge Status */}
-        <section className="mt-5 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
+        <section className="mt-4 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-100">
@@ -279,7 +399,7 @@ export function App() {
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-3 gap-3 rounded-xl border border-white/[0.06] bg-[#090d16] p-3.5 text-xs">
+          <div className="mt-3.5 grid grid-cols-3 gap-3 rounded-xl border border-white/[0.06] bg-[#090d16] p-3.5 text-xs">
             <div>
               <p className="text-[10px] uppercase tracking-wider text-slate-500">Status</p>
               <p
@@ -303,13 +423,13 @@ export function App() {
               <p className="mt-1 truncate font-mono text-sky-300">
                 {native?.capabilities.length
                   ? `${native.capabilities.length} registered`
-                  : 'native_echo'}
+                  : '13 native tools'}
               </p>
             </div>
           </div>
         </section>
 
-        <footer className="mt-6 flex items-center justify-between text-xs text-slate-500">
+        <footer className="mt-5 flex items-center justify-between text-xs text-slate-500">
           <span>All settings persist locally in chrome.storage.local.</span>
           <span className="font-mono text-[11px] text-slate-600">Zero external servers</span>
         </footer>

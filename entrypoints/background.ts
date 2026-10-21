@@ -23,6 +23,7 @@ import {
   type ScopePolicyMap,
 } from '@/lib/agent/permission';
 import { defaultRegistry } from '@/lib/agent/tools/registry';
+import { defaultMcpServerStore } from '@/lib/agent/mcp/store';
 import { defaultMemoryStore } from '@/lib/agent/memory/store';
 import {
   buildSkillBootstrapPrompt,
@@ -165,6 +166,30 @@ export default defineBackground(() => {
           }
         }
         outboundArgs = { ...args, workspaceRoot: wsRoot };
+      } else if (toolName === 'mcp_list_tools' || toolName === 'mcp_call_tool') {
+        const serverId = typeof args['serverId'] === 'string' ? args['serverId'] : '';
+        const server = await defaultMcpServerStore.getEnabled(serverId);
+        if (!server) {
+          return {
+            status: 'error',
+            error: {
+              code: 'PERMISSION_DENIED',
+              message: `MCP server "${serverId}" is not configured or disabled in GPT++ Settings.`,
+            },
+          };
+        }
+        const wsRoot = await readConfiguredWorkspace();
+        outboundArgs = {
+          command: server.command,
+          args: server.args,
+          ...(wsRoot ? { workspaceRoot: wsRoot } : {}),
+          ...(toolName === 'mcp_call_tool'
+            ? {
+                toolName: args['toolName'],
+                arguments: args['arguments'] ?? {},
+              }
+            : {}),
+        };
       }
 
       const connected = await ensureNativeConnected();
@@ -342,6 +367,51 @@ export default defineBackground(() => {
           );
           return createSuccess(message.id, { prompt, skill });
         });
+      }
+
+      if (message.method === 'mcp_servers_list') {
+        return defaultMcpServerStore
+          .list()
+          .then((servers) => createSuccess(message.id, { servers }));
+      }
+
+      if (message.method === 'mcp_servers_upsert') {
+        const p = (message.params ?? {}) as {
+          id?: string;
+          name?: string;
+          command?: string;
+          args?: string[];
+        };
+        return defaultMcpServerStore
+          .upsert({
+            id: p.id ?? '',
+            name: p.name,
+            command: p.command ?? '',
+            args: p.args,
+          })
+          .then(() => defaultMcpServerStore.list())
+          .then((servers) => createSuccess(message.id, { servers }))
+          .catch((err: unknown) =>
+            createError(
+              message.id,
+              'INVALID_PARAMS',
+              err instanceof Error ? err.message : String(err),
+            ),
+          );
+      }
+
+      if (message.method === 'mcp_servers_toggle') {
+        const p = (message.params ?? {}) as { id?: string; enabled?: boolean };
+        return defaultMcpServerStore
+          .setEnabled(p.id ?? '', Boolean(p.enabled))
+          .then((servers) => createSuccess(message.id, { servers }));
+      }
+
+      if (message.method === 'mcp_servers_remove') {
+        const p = (message.params ?? {}) as { id?: string };
+        return defaultMcpServerStore
+          .remove(p.id ?? '')
+          .then((servers) => createSuccess(message.id, { servers }));
       }
 
       return undefined;

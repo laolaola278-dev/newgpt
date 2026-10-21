@@ -24,6 +24,7 @@ export const gitStatusTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {},
+    additionalProperties: false,
   },
   execute: nativeStub('git_status'),
 };
@@ -51,6 +52,7 @@ export const gitDiffTool: ToolDefinition = {
         description: 'Diff context lines (default 3, max 20)',
       },
     },
+    additionalProperties: false,
   },
   execute: nativeStub('git_diff'),
 };
@@ -69,6 +71,7 @@ export const gitLogTool: ToolDefinition = {
         description: 'Number of commits to return (1–50, default 10)',
       },
     },
+    additionalProperties: false,
   },
   execute: nativeStub('git_log'),
 };
@@ -89,6 +92,7 @@ export const gitStageTool: ToolDefinition = {
       },
     },
     required: ['paths'],
+    additionalProperties: false,
   },
   execute: nativeStub('git_stage'),
 };
@@ -108,6 +112,7 @@ export const gitCommitTool: ToolDefinition = {
       },
     },
     required: ['message'],
+    additionalProperties: false,
   },
   execute: nativeStub('git_commit'),
 };

@@ -33,6 +33,7 @@ export function createMemoryTools(
         },
       },
       required: ['key', 'fact'],
+      additionalProperties: false,
     },
     async execute(args) {
       const entry = await store.remember({
@@ -66,6 +67,7 @@ export function createMemoryTools(
           description: 'Maximum entries to return (default 20)',
         },
       },
+      additionalProperties: false,
     },
     async execute(args) {
       const entries = await store.recall({
@@ -91,6 +93,7 @@ export function createMemoryTools(
         },
       },
       required: ['key'],
+      additionalProperties: false,
     },
     async execute(args) {
       const removed = await store.forget(args['key'] as string);
@@ -112,6 +115,7 @@ export function createSkillTools(
     inputSchema: {
       type: 'object',
       properties: {},
+      additionalProperties: false,
     },
     async execute() {
       const skills = await store.list();
@@ -140,6 +144,7 @@ export function createSkillTools(
         },
       },
       required: ['id'],
+      additionalProperties: false,
     },
     async execute(args) {
       const skill = await store.get(args['id'] as string);

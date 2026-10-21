@@ -100,7 +100,7 @@ pub fn diff(params: &Value) -> Result<Value, String> {
 
     if let Some(p) = params.get("path").and_then(Value::as_str) {
         if !p.trim().is_empty() {
-            let target = resolve_target_path(&root, p)?;
+            let target = resolve_target_path(&root, p, true)?;
             let rel = relative_display(&root, &target);
             args.push("--".to_string());
             args.push(rel);
@@ -177,7 +177,7 @@ pub fn stage(params: &Value) -> Result<Value, String> {
         let raw_path = item
             .as_str()
             .ok_or("every item in \"paths\" must be a string")?;
-        let target = resolve_target_path(&root, raw_path)?;
+        let target = resolve_target_path(&root, raw_path, true)?;
         staged_paths.push(relative_display(&root, &target));
     }
 
@@ -211,4 +211,58 @@ pub fn commit(params: &Value) -> Result<Value, String> {
         "message": message,
         "summary": output.trim(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn full_git_lifecycle_inside_confined_workspace() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gptpp_git_test_{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+
+        run_git(&dir, &["init".into()]).unwrap();
+        run_git(&dir, &["config".into(), "user.email".into(), "test@gptpp.local".into()]).unwrap();
+        run_git(&dir, &["config".into(), "user.name".into(), "GPT++ Test".into()]).unwrap();
+
+        fs::write(dir.join("hello.txt"), "line 1\n").unwrap();
+        let ws = dir.to_string_lossy().into_owned();
+
+        let st1 = status(&json!({ "workspaceRoot": ws })).unwrap();
+        assert_eq!(st1["clean"], false);
+
+        let stg = stage(&json!({
+            "workspaceRoot": ws,
+            "paths": ["hello.txt"]
+        }))
+        .unwrap();
+        assert_eq!(stg["count"], 1);
+
+        let df = diff(&json!({
+            "workspaceRoot": ws,
+            "staged": true,
+            "path": "hello.txt"
+        }))
+        .unwrap();
+        assert!(df["diff"].as_str().unwrap().contains("+line 1"));
+
+        let cm = commit(&json!({
+            "workspaceRoot": ws,
+            "message": "feat: initial test commit"
+        }))
+        .unwrap();
+        assert!(!cm["commit"].as_str().unwrap().is_empty());
+
+        let lg = log(&json!({ "workspaceRoot": ws, "limit": 5 })).unwrap();
+        assert_eq!(lg["commits"][0]["subject"], "feat: initial test commit");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
