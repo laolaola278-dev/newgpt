@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  extension:
+    name: Extension (TypeScript · Vitest · WXT MV3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install
+      - name: Typecheck
+        run: pnpm compile
+      - name: Run unit & DOM adapter tests
+        run: pnpm test
+      - name: Build production Chrome MV3 bundle
+        run: pnpm build
+
+  native-host:
+    name: Native Host (Rust · Sandbox · Git · MCP)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native-host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-host
+      - name: Run Rust unit & integration tests
+        run: |
+          if ! cargo test --locked > /tmp/cargo.out 2>&1; then
+            cat /tmp/cargo.out
+            echo "::error title=cargo-test::$(tr '\n' ' | ' < /tmp/cargo.out | cut -c1-3800)"
+            exit 1
+          fi
+          cat /tmp/cargo.out
+      - name: Build release binary
+        run: cargo build --release --locked
