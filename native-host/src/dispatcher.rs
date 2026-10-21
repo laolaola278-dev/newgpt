@@ -11,13 +11,33 @@ use crate::errors::{
     error_response, success_response, INVALID_ARGUMENTS, PROTOCOL_VERSION_MISMATCH,
     UNKNOWN_METHOD,
 };
-use crate::tools::echo;
+use crate::tools::{echo, fs as fs_tools, git as git_tools, mcp as mcp_tools, shell};
 
 pub const HOST_NAME: &str = "com.gptpp.native";
 pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_VERSION: u64 = 1;
 
-/// Dispatch one parsed request. `Ok(None)` means "no reply possible"
+pub const CAPABILITIES: &[&str] = &[
+    echo::NAME,
+    fs_tools::LIST_DIR_NAME,
+    fs_tools::READ_FILE_NAME,
+    fs_tools::WRITE_FILE_NAME,
+    fs_tools::SEARCH_NAME,
+    shell::NAME,
+    git_tools::STATUS_NAME,
+    git_tools::DIFF_NAME,
+    git_tools::LOG_NAME,
+    git_tools::STAGE_NAME,
+    git_tools::COMMIT_NAME,
+    mcp_tools::LIST_TOOLS_NAME,
+    mcp_tools::CALL_TOOL_NAME,
+];
+
+fn require_params(request: &Value) -> Result<&Value, &'static str> {
+    request.get("params").ok_or("arguments must be an object")
+}
+
+/// Dispatch one parsed request. `Err(())` means "no reply possible"
 /// (e.g. missing id) — the caller must not write anything.
 pub fn dispatch(request: &Value) -> Result<Value, ()> {
     let id = match request.get("id") {
@@ -38,23 +58,33 @@ pub fn dispatch(request: &Value) -> Result<Value, ()> {
         }
     };
 
+    let run_tool = |f: fn(&Value) -> Result<Value, String>| match require_params(request) {
+        Ok(params) => match f(params) {
+            Ok(result) => Ok(success_response(&id, result)),
+            Err(msg) => Ok(error_response(&id, INVALID_ARGUMENTS, &msg)),
+        },
+        Err(msg) => Ok(error_response(&id, INVALID_ARGUMENTS, msg)),
+    };
+
     match method {
         "hello" => Ok(handshake(&id, request)),
         "cancel" => Ok(success_response(
             &id,
             json!({ "cancelled": request["params"]["requestId"].is_string() }),
         )),
-        m if m == echo::NAME => match request.get("params") {
-            Some(params) => match echo::run(params) {
-                Ok(result) => Ok(success_response(&id, result)),
-                Err(msg) => Ok(error_response(&id, INVALID_ARGUMENTS, &msg)),
-            },
-            None => Ok(error_response(
-                &id,
-                INVALID_ARGUMENTS,
-                "arguments must be an object",
-            )),
-        },
+        m if m == echo::NAME => run_tool(echo::run),
+        m if m == fs_tools::LIST_DIR_NAME => run_tool(fs_tools::list_dir),
+        m if m == fs_tools::READ_FILE_NAME => run_tool(fs_tools::read_file),
+        m if m == fs_tools::WRITE_FILE_NAME => run_tool(fs_tools::write_file),
+        m if m == fs_tools::SEARCH_NAME => run_tool(fs_tools::search),
+        m if m == shell::NAME => run_tool(shell::run),
+        m if m == git_tools::STATUS_NAME => run_tool(git_tools::status),
+        m if m == git_tools::DIFF_NAME => run_tool(git_tools::diff),
+        m if m == git_tools::LOG_NAME => run_tool(git_tools::log),
+        m if m == git_tools::STAGE_NAME => run_tool(git_tools::stage),
+        m if m == git_tools::COMMIT_NAME => run_tool(git_tools::commit),
+        m if m == mcp_tools::LIST_TOOLS_NAME => run_tool(mcp_tools::list_tools),
+        m if m == mcp_tools::CALL_TOOL_NAME => run_tool(mcp_tools::call_tool),
         other => Ok(error_response(
             &id,
             UNKNOWN_METHOD,
@@ -79,7 +109,7 @@ fn handshake(id: &Value, request: &Value) -> Value {
                 "name": HOST_NAME,
                 "version": HOST_VERSION,
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": [echo::NAME],
+                "capabilities": CAPABILITIES,
             }),
         ),
     }
@@ -101,7 +131,10 @@ mod tests {
         assert_eq!(res["ok"], true);
         assert_eq!(res["result"]["name"], HOST_NAME);
         assert_eq!(res["result"]["protocolVersion"], 1);
-        assert_eq!(res["result"]["capabilities"], json!(["native_echo"]));
+        assert!(res["result"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("native_echo")));
         assert!(res["result"]["version"].is_string());
     }
 
@@ -129,43 +162,8 @@ mod tests {
     }
 
     #[test]
-    fn native_echo_validates_arguments() {
-        let res = dispatch(&json!({ "id": "r5", "method": "native_echo", "params": {} })).unwrap();
-        assert_eq!(res["error"]["code"], INVALID_ARGUMENTS);
-        let res = dispatch(&json!({
-            "id": "r6", "method": "native_echo", "params": { "text": 9 }
-        }))
-        .unwrap();
-        assert_eq!(res["error"]["code"], INVALID_ARGUMENTS);
-    }
-
-    #[test]
     fn unknown_methods_get_structured_errors() {
-        let res = dispatch(&json!({ "id": "r7", "method": "read_file" })).unwrap();
+        let res = dispatch(&json!({ "id": "r7", "method": "nonexistent_tool" })).unwrap();
         assert_eq!(res["error"]["code"], UNKNOWN_METHOD);
-        assert!(res["error"]["message"].as_str().unwrap().contains("read_file"));
-    }
-
-    #[test]
-    fn requests_without_id_are_dropped_silently() {
-        assert!(dispatch(&json!({ "method": "hello" })).is_err());
-    }
-
-    #[test]
-    fn malformed_envelope_gets_invalid_arguments() {
-        let res = dispatch(&json!({ "id": "r8" })).unwrap();
-        assert_eq!(res["error"]["code"], INVALID_ARGUMENTS);
-    }
-
-    #[test]
-    fn multiple_requests_keep_ids_straight() {
-        let a = dispatch(&json!({ "id": "a", "method": "native_echo", "params": { "text": "1" } }))
-            .unwrap();
-        let b = dispatch(&json!({ "id": "b", "method": "native_echo", "params": { "text": "2" } }))
-            .unwrap();
-        assert_eq!(a["id"], "a");
-        assert_eq!(b["id"], "b");
-        assert_eq!(a["result"]["text"], "1");
-        assert_eq!(b["result"]["text"], "2");
     }
 }

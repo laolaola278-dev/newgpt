@@ -17,6 +17,8 @@ import { AgentStateMachine, type AgentState } from '../state';
 import type { ExecutorReply, ToolExecutePayload, ToolOutcome } from '../tools/types';
 import {
   defaultAskResolver,
+  resolveToolScope,
+  summarizeToolArgs,
   type AskResolver,
   type PermissionPolicy,
 } from '../permission';
@@ -354,7 +356,9 @@ export class AgentLoopController {
         granted = await this.resolveAsk({
           toolName: reply.toolName,
           risk: reply.risk,
+          scope: resolveToolScope({ risk: reply.risk, scope: reply.scope }) ?? undefined,
           callId: call.id,
+          argsSummary: summarizeToolArgs(call.arguments),
         });
       } catch {
         granted = false;

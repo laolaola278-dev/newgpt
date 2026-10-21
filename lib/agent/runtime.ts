@@ -127,6 +127,7 @@ export function createToolExecutor(config: RuntimeConfig): ToolExecutor {
       return {
         status: 'permission_required',
         risk: tool.risk,
+        ...(tool.scope ? { scope: tool.scope } : {}),
         toolName: tool.name,
       };
     }
