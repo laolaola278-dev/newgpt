@@ -48,6 +48,18 @@ interface RegisteredToolInfo {
   execution: 'local' | 'native';
 }
 
+interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  source: 'builtin' | 'custom';
+}
+
+interface SkillsStatePayload {
+  skills: SkillSummary[];
+  memoryCount: number;
+}
+
 interface PanelState {
   status: 'checking' | 'connected' | 'disconnected';
   tabId?: number;
@@ -56,6 +68,7 @@ interface PanelState {
   agent?: AgentStatus;
   native?: NativeHostStatus;
   permissions?: PermissionSnapshot;
+  skillsState?: SkillsStatePayload;
   tools: RegisteredToolInfo[];
 }
 
@@ -76,11 +89,12 @@ export function App() {
   const [reconnecting, setReconnecting] = useState(false);
 
   const check = useCallback(async () => {
-    const [tabs, native, toolsRes, permissions] = await Promise.all([
+    const [tabs, native, toolsRes, permissions, skillsState] = await Promise.all([
       browser.tabs.query({ url: CHATGPT_MATCH_PATTERNS }).catch(() => []),
       queryRuntime<NativeHostStatus>('native_status'),
       queryRuntime<{ tools: RegisteredToolInfo[] }>('tools_list'),
       queryRuntime<PermissionSnapshot>('permissions_state'),
+      queryRuntime<SkillsStatePayload>('skills_state'),
     ]);
 
     const tools = toolsRes?.tools ?? [];
@@ -105,6 +119,7 @@ export function App() {
             agent: ag?.ok ? (ag.result as AgentStatus) : undefined,
             native,
             permissions,
+            skillsState,
             tools,
           });
           return;
@@ -114,7 +129,7 @@ export function App() {
       }
     }
 
-    setConn({ status: 'disconnected', native, permissions, tools });
+    setConn({ status: 'disconnected', native, permissions, skillsState, tools });
   }, []);
 
   useEffect(() => {
@@ -170,6 +185,17 @@ export function App() {
   const handleResolvePermission = async (id: string, resolution: ConsentResolution) => {
     await queryRuntime('permission_resolve', { id, resolution });
     await check();
+  };
+
+  const handleLaunchSkill = async (skillId: string) => {
+    if (conn.tabId === undefined) return;
+    const built = await queryRuntime<{ prompt: string }>('skill_build_prompt', {
+      id: skillId,
+    });
+    if (built?.prompt) {
+      await requestTab(conn.tabId, 'send_text', { text: built.prompt }).catch(() => null);
+      await check();
+    }
   };
 
   const handleReconnectNative = async () => {
@@ -482,6 +508,35 @@ export function App() {
                   </div>
                 );
               })}
+            </div>
+          </section>
+        )}
+
+        {/* Local Skills & On-Device Memory Card (Phase 7) */}
+        {conn.skillsState && (
+          <section className="rounded-xl border border-white/[0.08] bg-[#0f1624] p-3.5 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                Skills & Project Memory
+              </h2>
+              <span className="font-mono text-[10px] text-sky-300">
+                {conn.skillsState.memoryCount} local note
+                {conn.skillsState.memoryCount === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {conn.skillsState.skills.map((skill) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  disabled={conn.tabId === undefined}
+                  title={skill.description}
+                  onClick={() => void handleLaunchSkill(skill.id)}
+                  className="rounded-lg border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 font-mono text-[10px] font-medium text-sky-200 transition hover:border-sky-400/40 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  /{skill.id}
+                </button>
+              ))}
             </div>
           </section>
         )}

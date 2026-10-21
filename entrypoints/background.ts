@@ -23,6 +23,11 @@ import {
   type ScopePolicyMap,
 } from '@/lib/agent/permission';
 import { defaultRegistry } from '@/lib/agent/tools/registry';
+import { defaultMemoryStore } from '@/lib/agent/memory/store';
+import {
+  buildSkillBootstrapPrompt,
+  defaultSkillStore,
+} from '@/lib/agent/skills/store';
 import type {
   ExecutorReply,
   NativeBridge,
@@ -310,6 +315,33 @@ export default defineBackground(() => {
         return Promise.resolve(
           createSuccess(message.id, { tools: defaultRegistry.list() }),
         );
+      }
+
+      if (message.method === 'skills_state') {
+        return Promise.all([
+          defaultSkillStore.list(),
+          defaultMemoryStore.recall({ limit: 50 }),
+        ]).then(([skills, memories]) =>
+          createSuccess(message.id, {
+            skills,
+            memoryCount: memories.length,
+            recentMemories: memories.slice(0, 5),
+          }),
+        );
+      }
+
+      if (message.method === 'skill_build_prompt') {
+        const p = (message.params ?? {}) as { id?: string };
+        return defaultSkillStore.get(p.id ?? '').then((skill) => {
+          if (!skill) {
+            return createError(message.id, 'NOT_FOUND', `Unknown skill: ${p.id ?? ''}`);
+          }
+          const prompt = buildSkillBootstrapPrompt(
+            skill,
+            defaultRegistry.list().map((t) => t.name),
+          );
+          return createSuccess(message.id, { prompt, skill });
+        });
       }
 
       return undefined;
