@@ -1,13 +1,14 @@
 /**
  * GPT++ content script — runs inside chatgpt.com pages.
  *
- * Phase 1 scope:
+ * Responsibilities:
  *  - instantiate the ChatGPTAdapter (the only DOM interface GPT++ uses)
+ *  - coordinate the AgentLoopController with background runtime execution
  *  - answer RPC requests from the side panel / background
- *  - keep the small ⚡ badge confirming injection
+ *  - render a closed Shadow DOM status pill reflecting live agent state
  *
- * Everything the page says is untrusted data: this layer only observes and
- * reports. No tool-call parsing or execution happens here.
+ * Everything the page says is untrusted data: tool execution stays isolated
+ * in the background service worker and native host process.
  */
 
 import { browser } from 'wxt/browser';
@@ -76,7 +77,14 @@ export default defineContentScript({
     }
 
     const agent = new AgentLoopController({ adapter, executeTool: executeViaBackground });
-    for (const evt of ['state-changed', 'tool-started', 'tool-finished', 'duplicate-blocked', 'limit-reached', 'turn-completed'] as const) {
+    for (const evt of [
+      'state-changed',
+      'tool-started',
+      'tool-finished',
+      'duplicate-blocked',
+      'limit-reached',
+      'turn-completed',
+    ] as const) {
       agent.on(evt, (payload) => {
         console.debug(`[GPT++] agent:${evt}`, payload);
       });
@@ -151,26 +159,95 @@ export default defineContentScript({
     try {
       const host = document.createElement('div');
       host.id = 'gptpp-badge-host';
-      host.style.cssText = 'all:initial;position:fixed;left:12px;bottom:12px;z-index:2147483646;';
+      host.style.cssText = 'all:initial;position:fixed;left:14px;bottom:14px;z-index:2147483646;';
       const shadow = host.attachShadow({ mode: 'closed' });
 
-      const pill = document.createElement('div');
-      pill.textContent = '⚡ GPT++';
-      pill.title = `GPT++ v${version} active on ChatGPT`;
-      pill.style.cssText = [
-        'box-sizing:border-box',
-        'padding:4px 10px',
-        'border-radius:9999px',
-        'background:#0b1220',
-        'color:#7dd3fc',
-        'border:1px solid #1e293b',
-        "font:600 11px/1 ui-sans-serif,system-ui,sans-serif",
-        'opacity:0.85',
-        'cursor:default',
-        'user-select:none',
-      ].join(';');
+      const style = document.createElement('style');
+      style.textContent = `
+        .pill {
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 5px 11px;
+          border-radius: 9999px;
+          background: rgba(9, 13, 22, 0.92);
+          backdrop-filter: blur(8px);
+          color: #e2e8f0;
+          border: 1px solid rgba(56, 189, 248, 0.24);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.36);
+          font: 600 11px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+          letter-spacing: 0.01em;
+          cursor: default;
+          user-select: none;
+        }
+        .dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 9999px;
+          background: #34d399;
+          box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+          flex: none;
+        }
+        .dot[data-busy="true"] {
+          background: #38bdf8;
+          box-shadow: 0 0 8px rgba(56, 189, 248, 0.85);
+        }
+        .brand {
+          color: #7dd3fc;
+          font-weight: 700;
+        }
+        .meta {
+          color: #94a3b8;
+          font-weight: 500;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10px;
+        }
+      `;
 
-      shadow.appendChild(pill);
+      const pill = document.createElement('div');
+      pill.className = 'pill';
+      pill.title = `GPT++ v${version} active on ChatGPT`;
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+
+      const brand = document.createElement('span');
+      brand.className = 'brand';
+      brand.style.display = 'inline-flex';
+      brand.style.alignItems = 'center';
+      brand.style.gap = '4px';
+      brand.innerHTML =
+        '<svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" style="flex:none"><path d="M11.6 1.8 4.8 11h4.4l-.8 7.2 6.8-9.2h-4.4l.8-7.2Z"/></svg><span>GPT++</span>';
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = 'ready';
+
+      const syncBadge = () => {
+        const snap = agent.snapshot();
+        const busy =
+          snap.state === 'TOOL_DETECTED' ||
+          snap.state === 'WAITING_PERMISSION' ||
+          snap.state === 'EXECUTING' ||
+          snap.state === 'INJECTING_RESULT';
+        dot.dataset.busy = busy ? 'true' : 'false';
+        if (busy) {
+          meta.textContent = snap.lastTool ? `running · ${snap.lastTool.toolName}` : snap.state.toLowerCase();
+        } else if (snap.state === 'COMPLETED' && snap.steps > 0) {
+          meta.textContent = `done · ${snap.steps} step${snap.steps === 1 ? '' : 's'}`;
+        } else if (snap.state === 'CANCELLED') {
+          meta.textContent = 'paused';
+        } else {
+          meta.textContent = 'ready';
+        }
+      };
+
+      agent.on('state-changed', syncBadge);
+      agent.on('tool-finished', syncBadge);
+
+      pill.append(dot, brand, meta);
+      shadow.append(style, pill);
       document.body.appendChild(host);
     } catch {
       // Badge is cosmetic; observation works without it.

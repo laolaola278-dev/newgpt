@@ -25,11 +25,12 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
-  list(): Array<Pick<ToolDefinition, 'name' | 'description' | 'risk'>> {
-    return [...this.tools.values()].map(({ name, description, risk }) => ({
+  list(): Array<Pick<ToolDefinition, 'name' | 'description' | 'risk'> & { execution: 'local' | 'native' }> {
+    return [...this.tools.values()].map(({ name, description, risk, execution }) => ({
       name,
       description,
       risk,
+      execution: execution ?? 'local',
     }));
   }
 }

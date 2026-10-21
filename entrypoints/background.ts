@@ -4,8 +4,8 @@
  * Responsibilities:
  *  - open the Side Panel when the toolbar action is clicked
  *  - log content-script presence announcements from chatgpt.com tabs
- *  - Agent Runtime executor (`tool_execute`): registry → schema → permission
- *    → execution. Native tools route through the capability layer
+ *  - Agent Runtime executor (`tool_execute`): shape → registry → schema →
+ *    permission → execution. Native tools route through the capability layer
  *    (Chrome Native Messaging → gptpp-native Rust host); local tools stay in
  *    the worker. Page code never runs capabilities itself.
  */
@@ -18,7 +18,7 @@ import { createToolExecutor } from '@/lib/agent/runtime';
 import { defaultRegistry } from '@/lib/agent/tools/registry';
 import type { ExecutorReply, NativeBridge, ToolError } from '@/lib/agent/tools/types';
 import { GptppNativeError, type NativeErrorCode } from '@/lib/native/errors';
-import { NativeMessagingClient } from '@/lib/native/client';
+import { HOST_NAME, NativeMessagingClient } from '@/lib/native/client';
 
 export default defineBackground(() => {
   void browser.sidePanel
@@ -27,22 +27,36 @@ export default defineBackground(() => {
 
   // ── Native Messaging (capability layer) ──────────────────────────────────
   const nativeClient = new NativeMessagingClient({
-    portFactory: () => browser.runtime.connectNative('com.gptpp.native'),
+    hostName: HOST_NAME,
+    portFactory: () => browser.runtime.connectNative(HOST_NAME),
   });
 
   let lastConnectAttempt = 0;
-  async function ensureNativeConnected(): Promise<boolean> {
-    if (nativeClient.isConnected()) return true;
+  async function ensureNativeConnected(force = false): Promise<boolean> {
+    if (!force && nativeClient.isConnected()) return true;
     const now = Date.now();
-    if (now - lastConnectAttempt < 5000) return nativeClient.isConnected();
+    if (!force && now - lastConnectAttempt < 5000) return nativeClient.isConnected();
     lastConnectAttempt = now;
     try {
-      await nativeClient.connect();
+      if (force) await nativeClient.reconnect();
+      else await nativeClient.connect();
       console.log('[GPT++] native host connected', nativeClient.getCapabilities());
     } catch (err) {
       console.warn('[GPT++] native host unavailable:', (err as Error).message);
     }
     return nativeClient.isConnected();
+  }
+
+  function nativeStatusPayload() {
+    const caps = nativeClient.getCapabilities();
+    return {
+      hostName: HOST_NAME,
+      state: nativeClient.getState(),
+      reason: nativeClient.getLastErrorCode(),
+      version: caps?.version ?? null,
+      protocolVersion: caps?.protocolVersion ?? null,
+      capabilities: caps?.capabilities ?? [],
+    };
   }
 
   function mapNativeError(err: unknown): ToolError {
@@ -121,17 +135,20 @@ export default defineBackground(() => {
     }
 
     if (message.method === 'native_status') {
-      // Probe lazily so the panel sees a real state without spamming Chrome.
-      void ensureNativeConnected();
-      const caps = nativeClient.getCapabilities();
+      return ensureNativeConnected(false).then(() =>
+        createSuccess(message.id, nativeStatusPayload()),
+      );
+    }
+
+    if (message.method === 'native_reconnect') {
+      return ensureNativeConnected(true).then(() =>
+        createSuccess(message.id, nativeStatusPayload()),
+      );
+    }
+
+    if (message.method === 'tools_list') {
       return Promise.resolve(
-        createSuccess(message.id, {
-          state: nativeClient.getState(),
-          reason: nativeClient.getLastErrorCode(),
-          version: caps?.version ?? null,
-          protocolVersion: caps?.protocolVersion ?? null,
-          capabilities: caps?.capabilities ?? [],
-        }),
+        createSuccess(message.id, { tools: defaultRegistry.list() }),
       );
     }
 
