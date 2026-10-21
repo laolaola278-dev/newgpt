@@ -19,6 +19,11 @@ import { defaultRegistry } from '@/lib/agent/tools/registry';
 import type { ExecutorReply, NativeBridge, ToolError } from '@/lib/agent/tools/types';
 import { GptppNativeError, type NativeErrorCode } from '@/lib/native/errors';
 import { HOST_NAME, NativeMessagingClient } from '@/lib/native/client';
+import {
+  WORKSPACE_STORAGE_KEY,
+  normalizeWorkspaceRoot,
+  resolveWithinWorkspace,
+} from '@/lib/workspace';
 
 export default defineBackground(() => {
   void browser.sidePanel
@@ -74,8 +79,53 @@ export default defineBackground(() => {
     };
   }
 
+  const WORKSPACE_REQUIRED_TOOLS = new Set([
+    'fs_list_dir',
+    'fs_read_file',
+    'fs_write_file',
+    'fs_search',
+    'shell_exec',
+  ]);
+
+  async function readConfiguredWorkspace(): Promise<string | null> {
+    const items = await browser.storage.local.get(WORKSPACE_STORAGE_KEY);
+    return normalizeWorkspaceRoot(items[WORKSPACE_STORAGE_KEY]);
+  }
+
   const nativeBridge: NativeBridge = {
     async execute(toolName, args): Promise<ExecutorReply> {
+      let outboundArgs: Record<string, unknown> = args;
+      if (WORKSPACE_REQUIRED_TOOLS.has(toolName)) {
+        const wsRoot = await readConfiguredWorkspace();
+        if (!wsRoot) {
+          return {
+            status: 'error',
+            error: {
+              code: 'INVALID_ARGUMENTS',
+              message:
+                'Workspace root is not configured. Open GPT++ Settings to set a valid directory first.',
+            },
+          };
+        }
+        const pathArg =
+          typeof args['path'] === 'string'
+            ? args['path']
+            : typeof args['cwd'] === 'string'
+              ? args['cwd']
+              : '.';
+        const confinement = resolveWithinWorkspace(wsRoot, pathArg);
+        if (!confinement.ok) {
+          return {
+            status: 'error',
+            error: {
+              code: 'PERMISSION_DENIED',
+              message: confinement.message,
+            },
+          };
+        }
+        outboundArgs = { ...args, workspaceRoot: wsRoot };
+      }
+
       const connected = await ensureNativeConnected();
       if (!connected) {
         return {
@@ -88,7 +138,7 @@ export default defineBackground(() => {
       }
       const startedAt = Date.now();
       try {
-        const res = await nativeClient.request(toolName, args);
+        const res = await nativeClient.request(toolName, outboundArgs);
         return {
           status: 'ok',
           result: res.result,

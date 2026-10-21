@@ -6,6 +6,8 @@
 import type { ToolDefinition } from './types';
 import { demoEchoTool } from './demo-echo';
 import { nativeEchoTool } from './native-echo';
+import { filesystemTools } from './fs';
+import { shellExecTool } from './shell';
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -25,7 +27,11 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
-  list(): Array<Pick<ToolDefinition, 'name' | 'description' | 'risk'> & { execution: 'local' | 'native' }> {
+  list(): Array<
+    Pick<ToolDefinition, 'name' | 'description' | 'risk'> & {
+      execution: 'local' | 'native';
+    }
+  > {
     return [...this.tools.values()].map(({ name, description, risk, execution }) => ({
       name,
       description,
@@ -39,3 +45,7 @@ export class ToolRegistry {
 export const defaultRegistry = new ToolRegistry();
 defaultRegistry.register(demoEchoTool);
 defaultRegistry.register(nativeEchoTool);
+for (const tool of filesystemTools) {
+  defaultRegistry.register(tool);
+}
+defaultRegistry.register(shellExecTool);

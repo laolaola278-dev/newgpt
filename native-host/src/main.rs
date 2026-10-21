@@ -7,6 +7,7 @@
 mod dispatcher;
 mod errors;
 mod protocol;
+mod sandbox;
 mod tools;
 
 use std::io::{self, Write};
