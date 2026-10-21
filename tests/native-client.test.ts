@@ -37,7 +37,7 @@ class MockPort implements NativePortLike {
 }
 
 const CAPS = {
-  name: 'gptpp-native',
+  name: 'com.gptpp.native',
   version: '0.1.0',
   protocolVersion: 1,
   capabilities: ['native_echo'],
@@ -232,5 +232,17 @@ describe('NativeMessagingClient', () => {
     client.disconnect();
     expect(() => client.disconnect()).not.toThrow();
     expect(client.getState()).toBe('DISCONNECTED');
+  });
+
+  it('rejects immediately and cleans up timer if port.postMessage throws during request()', async () => {
+    const port = new MockPort();
+    const client = makeClient(port);
+    await handshake(client, port);
+    port.postMessage = () => {
+      throw new Error('pipe closed');
+    };
+    await expect(client.request('native_echo', { text: 'boom' })).rejects.toMatchObject({
+      code: 'NATIVE_HOST_UNAVAILABLE',
+    });
   });
 });

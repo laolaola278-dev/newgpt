@@ -1,5 +1,5 @@
 {
-  "name": "gptpp-native",
+  "name": "com.gptpp.native",
   "description": "GPT++ Native Host — local capability boundary for the GPT++ extension",
   "path": "__NATIVE_HOST_PATH__",
   "type": "stdio",

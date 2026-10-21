@@ -36,11 +36,15 @@ impl From<io::Error> for FrameError {
 /// Read one frame. Returns `Ok(None)` on a clean EOF at a frame boundary.
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>, FrameError> {
     let mut len_buf = [0u8; 4];
-    match reader.read_exact(&mut len_buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(FrameError::Io(e)),
+    loop {
+        match reader.read(&mut len_buf[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(FrameError::Io(e)),
+        }
     }
+    reader.read_exact(&mut len_buf[1..])?;
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_FRAME_BYTES {
         return Err(FrameError::Oversized(len));
@@ -105,6 +109,15 @@ mod tests {
         buf.extend_from_slice(&10u32.to_le_bytes());
         buf.extend_from_slice(b"short");
         let mut cursor = io::Cursor::new(buf);
+        match read_frame(&mut cursor) {
+            Err(FrameError::UnexpectedEof) => {}
+            other => panic!("expected UnexpectedEof, got {:?}", other.map(|f| f.is_some())),
+        }
+    }
+
+    #[test]
+    fn truncated_header_is_an_error() {
+        let mut cursor = io::Cursor::new(vec![10u8, 0u8]);
         match read_frame(&mut cursor) {
             Err(FrameError::UnexpectedEof) => {}
             other => panic!("expected UnexpectedEof, got {:?}", other.map(|f| f.is_some())),

@@ -22,7 +22,7 @@ import type {
   NativePortLike,
 } from './types';
 
-export const HOST_NAME = 'gptpp-native';
+export const HOST_NAME = 'com.gptpp.native';
 export const PROTOCOL_VERSION = 1;
 
 interface PendingRequest {
@@ -130,7 +130,11 @@ export class NativeMessagingClient {
         );
       }, this.requestTimeoutMs);
       this.pending.set(envelope.id, { resolve, reject, timer });
-      this.safePost(envelope);
+      if (!this.safePost(envelope)) {
+        this.pending.delete(envelope.id);
+        clearTimeout(timer);
+        reject(nativeUnavailable('cannot write to native port'));
+      }
     });
   }
 

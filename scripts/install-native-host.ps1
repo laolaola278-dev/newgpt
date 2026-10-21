@@ -4,9 +4,8 @@
 
 .DESCRIPTION
     Builds the Rust native host, copies it to a per-user install directory,
-    writes the Chrome Native Messaging manifest (filling in the real exe path
-    and extension ID), registers it under HKCU (no admin rights needed), and
-    verifies the result.
+    writes the Chrome Native Messaging manifest (`com.gptpp.native.json`),
+    registers it under HKCU (no admin rights needed), and verifies the result.
 
     The extension ID changes between unpacked reloads; re-run this script with
     the current ID whenever Chrome regenerates it.
@@ -32,9 +31,10 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $HostProject = Join-Path $RepoRoot 'native-host'
-$TemplateName = 'gptpp-native.template.json'
-$ManifestName = 'gptpp-native.json'
-$RegistryKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\gptpp-native'
+$HostName = 'com.gptpp.native'
+$TemplateName = "$HostName.template.json"
+$ManifestName = "$HostName.json"
+$RegistryKey = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
 
 # 1. Build (release)
 Write-Host '==> cargo build --release'
@@ -50,11 +50,12 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $ExeDest = Join-Path $InstallDir 'gptpp-native.exe'
 Copy-Item $ExeSource $ExeDest -Force
 
-# 3. Manifest (placeholders -> real values; backslashes must be JSON-escaped)
+# 3. Manifest (literal string replacement avoids regex $ group corruption)
 $TemplatePath = Join-Path $HostProject "manifest\$TemplateName"
-$ManifestJson = (Get-Content $TemplatePath -Raw) `
-    -replace '__NATIVE_HOST_PATH__', ($ExeDest -replace '\\', '\\') `
-    -replace '__EXTENSION_ID__', $ExtensionId
+$ManifestJson = (Get-Content $TemplatePath -Raw)
+$ManifestJson = $ManifestJson.Replace('__NATIVE_HOST_PATH__', $ExeDest.Replace('\', '\\'))
+$ManifestJson = $ManifestJson.Replace('__EXTENSION_ID__', $ExtensionId)
+
 # Validate before writing.
 $null = $ManifestJson | ConvertFrom-Json
 $ManifestPath = Join-Path $InstallDir $ManifestName
@@ -77,6 +78,7 @@ if ($registered -ne $ManifestPath) { Write-Error "registry mismatch: $registered
 if ($ok) {
     Write-Host ''
     Write-Host 'GPT++ native host installed:' -ForegroundColor Green
+    Write-Host "  host     : $HostName"
     Write-Host "  binary   : $ExeDest"
     Write-Host "  manifest : $ManifestPath"
     Write-Host "  registry : $RegistryKey -> $registered"
