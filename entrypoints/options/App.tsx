@@ -1,14 +1,28 @@
 /**
- * GPT++ Options — workspace boundary & native host diagnostics.
- *
- * Stored locally via chrome.storage.local; nothing leaves the machine.
+ * GPT++ Options — workspace boundary, 5-scope permission matrix & native host diagnostics.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
+import {
+  ALL_PERMISSION_SCOPES,
+  DEFAULT_SCOPE_POLICY,
+  type PermissionDecision,
+  type PermissionSnapshot,
+  type ScopePolicyMap,
+} from '@/lib/agent/permission';
+import type { PermissionScope } from '@/lib/agent/tools/types';
 import { createRequest, isResponse } from '@/lib/protocol';
 
 const WORKSPACE_KEY = 'workspace.root';
+
+const SCOPE_DESCRIPTIONS: Record<PermissionScope, string> = {
+  READ: 'Read workspace files, list directories & search code',
+  WRITE: 'Create or modify files inside the confined workspace',
+  EXECUTE: 'Run controlled shell commands & local MCP servers',
+  GIT: 'Inspect repository status/diff/log & stage/commit changes',
+  BROWSER: 'Inspect open tab titles/URLs & active page metadata',
+};
 
 interface NativeHostStatus {
   hostName?: string;
@@ -24,6 +38,7 @@ export function App() {
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [native, setNative] = useState<NativeHostStatus | null>(null);
+  const [policy, setPolicy] = useState<ScopePolicyMap>({ ...DEFAULT_SCOPE_POLICY });
   const [probing, setProbing] = useState(false);
 
   const probeNative = useCallback(async (force = false) => {
@@ -42,6 +57,19 @@ export function App() {
     }
   }, []);
 
+  const loadPermissions = useCallback(async () => {
+    try {
+      const raw: unknown = await browser.runtime.sendMessage(
+        createRequest('permissions_state'),
+      );
+      if (isResponse(raw) && raw.ok) {
+        setPolicy((raw.result as PermissionSnapshot).policy);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
     void browser.storage.local
       .get(WORKSPACE_KEY)
@@ -51,7 +79,8 @@ export function App() {
       })
       .finally(() => setLoaded(true));
     void probeNative(false);
-  }, [probeNative]);
+    void loadPermissions();
+  }, [probeNative, loadPermissions]);
 
   const save = async () => {
     const trimmed = root.trim();
@@ -59,6 +88,20 @@ export function App() {
     await browser.storage.local.set({ [WORKSPACE_KEY]: trimmed });
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
+  };
+
+  const updateScope = async (scope: PermissionScope, decision: PermissionDecision) => {
+    setPolicy((prev) => ({ ...prev, [scope]: decision }));
+    try {
+      const raw: unknown = await browser.runtime.sendMessage(
+        createRequest('permissions_set_scope', { scope, decision }),
+      );
+      if (isResponse(raw) && raw.ok) {
+        setPolicy((raw.result as PermissionSnapshot).policy);
+      }
+    } catch {
+      /* ignore */
+    }
   };
 
   const version = browser.runtime.getManifest().version;
@@ -84,7 +127,7 @@ export function App() {
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Local agent workspace confinement & Native Messaging bridge
+                Workspace confinement, 5-scope permission matrix & Native Host bridge
               </p>
             </div>
           </div>
@@ -95,19 +138,17 @@ export function App() {
 
         {/* Workspace Confinement */}
         <section className="mt-6 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <label
-                htmlFor="workspace-root"
-                className="block text-sm font-semibold text-slate-100"
-              >
-                Workspace Confinement Root
-              </label>
-              <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                Absolute directory boundary that local filesystem, git, and shell tools
-                may access. Path traversal outside this root is strictly rejected.
-              </p>
-            </div>
+          <div>
+            <label
+              htmlFor="workspace-root"
+              className="block text-sm font-semibold text-slate-100"
+            >
+              Workspace Confinement Root
+            </label>
+            <p className="mt-1 text-xs leading-relaxed text-slate-400">
+              Absolute directory boundary that local filesystem, git, and shell tools
+              may access. Path traversal outside this root is strictly rejected.
+            </p>
           </div>
 
           <div className="mt-4 flex gap-2.5">
@@ -133,7 +174,13 @@ export function App() {
               {saved ? (
                 <>
                   <span>Saved</span>
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.4" className="h-3.5 w-3.5">
+                  <svg
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    className="h-3.5 w-3.5"
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" d="m3 8.5 3.2 3.2L13 5" />
                   </svg>
                 </>
@@ -141,6 +188,73 @@ export function App() {
                 'Save Path'
               )}
             </button>
+          </div>
+        </section>
+
+        {/* Granular 5-Scope Permission Matrix */}
+        <section className="mt-5 rounded-2xl border border-white/[0.08] bg-[#0f1624] p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-100">
+                Granular Permission Matrix
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Control default behavior per capability scope (Ask prompts inside the Side Panel)
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                void browser.runtime
+                  .sendMessage(createRequest('permissions_reset_session'))
+                  .then(() => loadPermissions())
+              }
+              className="shrink-0 whitespace-nowrap rounded-xl border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/[0.08]"
+            >
+              Reset Session Grants
+            </button>
+          </div>
+
+          <div className="mt-4 divide-y divide-white/[0.06] rounded-xl border border-white/[0.06] bg-[#090d16] px-4">
+            {ALL_PERMISSION_SCOPES.map((scope) => (
+              <div
+                key={scope}
+                className="flex items-center justify-between gap-4 py-3"
+              >
+                <div className="min-w-0">
+                  <span className="font-mono text-xs font-bold text-sky-300">
+                    {scope}
+                  </span>
+                  <p className="mt-0.5 truncate text-xs text-slate-400">
+                    {SCOPE_DESCRIPTIONS[scope]}
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 rounded-lg border border-white/[0.08] bg-[#0f1624] p-0.5 text-xs">
+                  {(['allow', 'ask', 'deny'] as const).map((mode) => {
+                    const active = policy[scope] === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => void updateScope(scope, mode)}
+                        className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-medium uppercase transition ${
+                          active
+                            ? mode === 'allow'
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : mode === 'deny'
+                                ? 'bg-rose-500/20 text-rose-300'
+                                : 'bg-amber-500/20 text-amber-200'
+                            : 'text-slate-500 hover:text-slate-300'
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 
@@ -180,14 +294,16 @@ export function App() {
               <p className="text-[10px] uppercase tracking-wider text-slate-500">Protocol</p>
               <p className="mt-1 font-mono text-slate-200">
                 {native?.version
-                  ? `v${native.version} (RPC v${native.protocolVersion ?? 1})`
+                  ? `v${native.version} (RPC v1)`
                   : 'v1 (stdio)'}
               </p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wider text-slate-500">Capabilities</p>
               <p className="mt-1 truncate font-mono text-sky-300">
-                {native?.capabilities.length ? native.capabilities.join(', ') : 'native_echo'}
+                {native?.capabilities.length
+                  ? `${native.capabilities.length} registered`
+                  : 'native_echo'}
               </p>
             </div>
           </div>

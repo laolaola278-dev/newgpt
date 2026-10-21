@@ -28,16 +28,19 @@ export class ToolRegistry {
   }
 
   list(): Array<
-    Pick<ToolDefinition, 'name' | 'description' | 'risk'> & {
+    Pick<ToolDefinition, 'name' | 'description' | 'risk' | 'scope'> & {
       execution: 'local' | 'native';
     }
   > {
-    return [...this.tools.values()].map(({ name, description, risk, execution }) => ({
-      name,
-      description,
-      risk,
-      execution: execution ?? 'local',
-    }));
+    return [...this.tools.values()].map(
+      ({ name, description, risk, scope, execution }) => ({
+        name,
+        description,
+        risk,
+        ...(scope ? { scope } : {}),
+        execution: execution ?? 'local',
+      }),
+    );
   }
 }
 

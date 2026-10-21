@@ -1,16 +1,12 @@
 /**
- * GPT++ Side Panel — live runtime inspector & control surface.
- *
- * Reports:
- *  - active ChatGPT tab connection, conversation title/id & streaming state
- *  - Agent Loop state machine, step counter, cancel/resume controls & last run
- *  - Native Host (`com.gptpp.native`) handshake status, version & capabilities
- *  - Registered tools across local / native boundaries + permission policy
+ * GPT++ Side Panel — live runtime inspector, interactive consent & controls.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { CHATGPT_MATCH_PATTERNS, isChatGptUrl } from '@/lib/chatgpt-detect';
+import { ALL_PERMISSION_SCOPES, type ConsentResolution, type PermissionSnapshot } from '@/lib/agent/permission';
+import type { PermissionScope } from '@/lib/agent/tools/types';
 import { requestTab } from '@/lib/messaging';
 import { createRequest, isResponse } from '@/lib/protocol';
 
@@ -47,7 +43,8 @@ interface NativeHostStatus {
 interface RegisteredToolInfo {
   name: string;
   description: string;
-  risk: 'safe' | 'low' | 'read' | 'write' | 'execute';
+  risk: string;
+  scope?: PermissionScope;
   execution: 'local' | 'native';
 }
 
@@ -58,12 +55,13 @@ interface PanelState {
   conversation?: ConversationStatus;
   agent?: AgentStatus;
   native?: NativeHostStatus;
+  permissions?: PermissionSnapshot;
   tools: RegisteredToolInfo[];
 }
 
-async function queryRuntime<T>(method: string): Promise<T | undefined> {
+async function queryRuntime<T>(method: string, params?: unknown): Promise<T | undefined> {
   try {
-    const raw: unknown = await browser.runtime.sendMessage(createRequest(method));
+    const raw: unknown = await browser.runtime.sendMessage(createRequest(method, params));
     return isResponse(raw) && raw.ok ? (raw.result as T) : undefined;
   } catch {
     return undefined;
@@ -78,14 +76,14 @@ export function App() {
   const [reconnecting, setReconnecting] = useState(false);
 
   const check = useCallback(async () => {
-    const [tabs, native, toolsRes] = await Promise.all([
+    const [tabs, native, toolsRes, permissions] = await Promise.all([
       browser.tabs.query({ url: CHATGPT_MATCH_PATTERNS }).catch(() => []),
       queryRuntime<NativeHostStatus>('native_status'),
       queryRuntime<{ tools: RegisteredToolInfo[] }>('tools_list'),
+      queryRuntime<PermissionSnapshot>('permissions_state'),
     ]);
 
     const tools = toolsRes?.tools ?? [];
-    // Always prioritize the currently active ChatGPT tab over background tabs.
     const orderedTabs = [...tabs].sort(
       (a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)),
     );
@@ -106,6 +104,7 @@ export function App() {
             conversation: st?.ok ? (st.result as ConversationStatus) : undefined,
             agent: ag?.ok ? (ag.result as AgentStatus) : undefined,
             native,
+            permissions,
             tools,
           });
           return;
@@ -115,12 +114,12 @@ export function App() {
       }
     }
 
-    setConn({ status: 'disconnected', native, tools });
+    setConn({ status: 'disconnected', native, permissions, tools });
   }, []);
 
   useEffect(() => {
     void check();
-    const poll = setInterval(() => void check(), 2500);
+    const poll = setInterval(() => void check(), 1500);
 
     const onUpdated = (
       _tabId: number,
@@ -168,6 +167,11 @@ export function App() {
     await check();
   };
 
+  const handleResolvePermission = async (id: string, resolution: ConsentResolution) => {
+    await queryRuntime('permission_resolve', { id, resolution });
+    await check();
+  };
+
   const handleReconnectNative = async () => {
     setReconnecting(true);
     try {
@@ -179,6 +183,7 @@ export function App() {
   };
 
   const version = browser.runtime.getManifest().version;
+  const pendingList = conn.permissions?.pending ?? [];
   const agentBusy =
     conn.agent !== undefined &&
     ['TOOL_DETECTED', 'WAITING_PERMISSION', 'EXECUTING', 'INJECTING_RESULT', 'CONTINUING'].includes(
@@ -212,12 +217,59 @@ export function App() {
           <button
             type="button"
             onClick={() => void browser.runtime.openOptionsPage()}
-            title="Open Workspace Options"
+            title="Open Workspace & Permission Settings"
             className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:border-white/[0.16] hover:bg-white/[0.06]"
           >
             Options
           </button>
         </header>
+
+        {/* Live Interactive Consent Prompt (Phase 5) */}
+        {pendingList.map((req) => (
+          <section
+            key={req.id}
+            className="rounded-xl border border-amber-400/35 bg-amber-950/20 p-3.5 shadow-lg"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+                Approval Required · {req.scope}
+              </span>
+              <span className="font-mono text-[10px] text-slate-500">{req.callId}</span>
+            </div>
+
+            <p className="mt-2 font-mono text-xs font-semibold text-slate-100">
+              {req.toolName}
+            </p>
+            <p className="mt-1 break-all rounded border border-white/[0.06] bg-[#090d16] px-2.5 py-1.5 font-mono text-[10px] text-slate-400">
+              {req.argsSummary}
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleResolvePermission(req.id, 'allow_once')}
+                className="rounded-lg bg-sky-400 px-2.5 py-1 text-[11px] font-semibold text-slate-950 transition hover:bg-sky-300"
+              >
+                Allow Once
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResolvePermission(req.id, 'allow_session')}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/25"
+              >
+                Allow {req.scope} (Session)
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResolvePermission(req.id, 'deny')}
+                className="ml-auto rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/20"
+              >
+                Deny
+              </button>
+            </div>
+          </section>
+        ))}
 
         {/* Connection Card */}
         <section className="rounded-xl border border-white/[0.08] bg-[#0f1624] p-3.5 shadow-sm">
@@ -329,13 +381,15 @@ export function App() {
                 <span className="inline-flex items-center gap-2">
                   <span
                     className={`inline-block h-2 w-2 rounded-full ${
-                      agentBusy
-                        ? 'animate-pulse bg-sky-400'
-                        : conn.agent.state === 'FAILED'
-                          ? 'bg-rose-400'
-                          : conn.agent.state === 'COMPLETED'
-                            ? 'bg-emerald-400'
-                            : 'bg-slate-400'
+                      conn.agent.state === 'WAITING_PERMISSION'
+                        ? 'animate-pulse bg-amber-400'
+                        : agentBusy
+                          ? 'animate-pulse bg-sky-400'
+                          : conn.agent.state === 'FAILED'
+                            ? 'bg-rose-400'
+                            : conn.agent.state === 'COMPLETED'
+                              ? 'bg-emerald-400'
+                              : 'bg-slate-400'
                     }`}
                   />
                   <span className="rounded bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-100">
@@ -392,6 +446,46 @@ export function App() {
           )}
         </section>
 
+        {/* 5-Scope Permission Matrix Summary */}
+        {conn.permissions && (
+          <section className="rounded-xl border border-white/[0.08] bg-[#0f1624] p-3.5 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                Permission Scopes
+              </h2>
+              <span className="font-mono text-[10px] text-slate-500">
+                {conn.permissions.sessionGrants.length} session grant
+                {conn.permissions.sessionGrants.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-1.5">
+              {ALL_PERMISSION_SCOPES.map((scope) => {
+                const sessionAllowed = conn.permissions!.sessionGrants.includes(scope);
+                const mode = sessionAllowed ? 'session' : conn.permissions!.policy[scope];
+                const badgeClass =
+                  mode === 'allow' || mode === 'session'
+                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                    : mode === 'deny'
+                      ? 'border-rose-500/25 bg-rose-500/10 text-rose-300'
+                      : 'border-amber-500/20 bg-amber-500/10 text-amber-200';
+                return (
+                  <div
+                    key={scope}
+                    className={`flex flex-col items-center rounded-lg border px-1 py-1.5 text-center ${badgeClass}`}
+                  >
+                    <span className="font-mono text-[9px] font-bold tracking-tight">
+                      {scope}
+                    </span>
+                    <span className="mt-0.5 font-mono text-[8px] uppercase opacity-80">
+                      {mode}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Native Host Card */}
         <section className="rounded-xl border border-white/[0.08] bg-[#0f1624] p-3.5 shadow-sm">
           <div className="mb-2 flex items-center justify-between">
@@ -437,12 +531,6 @@ export function App() {
                 )}
               </div>
 
-              {conn.native.hostName && (
-                <p className="pl-[18px] font-mono text-[10px] text-slate-500">
-                  {conn.native.hostName}
-                </p>
-              )}
-
               {conn.native.capabilities.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pl-[18px]">
                   {conn.native.capabilities.map((cap) => (
@@ -480,7 +568,7 @@ export function App() {
           </div>
 
           {conn.tools.length > 0 ? (
-            <div className="divide-y divide-white/[0.05]">
+            <div className="max-h-56 divide-y divide-white/[0.05] overflow-y-auto pr-1">
               {conn.tools.map((tool) => (
                 <div
                   key={tool.name}
@@ -499,7 +587,7 @@ export function App() {
                       {tool.execution}
                     </span>
                     <span className="rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase text-emerald-300">
-                      {tool.risk}
+                      {tool.scope ?? tool.risk}
                     </span>
                   </div>
                 </div>
@@ -520,7 +608,13 @@ export function App() {
 
 function CheckIcon() {
   return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" className="h-3 w-3 shrink-0">
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      className="h-3 w-3 shrink-0"
+    >
       <path strokeLinecap="round" strokeLinejoin="round" d="m3 8.5 3.2 3.2L13 5" />
     </svg>
   );

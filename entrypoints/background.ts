@@ -3,11 +3,10 @@
  *
  * Responsibilities:
  *  - open the Side Panel when the toolbar action is clicked
- *  - log content-script presence announcements from chatgpt.com tabs
+ *  - maintain 5-scope permission policies, session grants & interactive consent
  *  - Agent Runtime executor (`tool_execute`): shape → registry → schema →
- *    permission → execution. Native tools route through the capability layer
- *    (Chrome Native Messaging → gptpp-native Rust host); local tools stay in
- *    the worker. Page code never runs capabilities itself.
+ *    permission → execution. Native tools route through Chrome Native Messaging
+ *    to `gptpp-native` with workspace confinement verified on both sides.
  */
 
 import { browser } from 'wxt/browser';
@@ -15,8 +14,22 @@ import { defineBackground } from 'wxt/utils/define-background';
 import { isChatGptUrl } from '@/lib/chatgpt-detect';
 import { createError, createSuccess, isRequest } from '@/lib/protocol';
 import { createToolExecutor } from '@/lib/agent/runtime';
+import {
+  PERMISSION_STORAGE_KEY,
+  PermissionManager,
+  resolveToolScope,
+  type ConsentResolution,
+  type PermissionDecision,
+  type ScopePolicyMap,
+} from '@/lib/agent/permission';
 import { defaultRegistry } from '@/lib/agent/tools/registry';
-import type { ExecutorReply, NativeBridge, ToolError } from '@/lib/agent/tools/types';
+import type {
+  ExecutorReply,
+  NativeBridge,
+  PermissionScope,
+  ToolError,
+  ToolRisk,
+} from '@/lib/agent/tools/types';
 import { GptppNativeError, type NativeErrorCode } from '@/lib/native/errors';
 import { HOST_NAME, NativeMessagingClient } from '@/lib/native/client';
 import {
@@ -29,6 +42,19 @@ export default defineBackground(() => {
   void browser.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err) => console.error('[GPT++] sidePanel behavior failed', err));
+
+  // ── 5-Scope Permission Manager ───────────────────────────────────────────
+  const permissionManager = new PermissionManager();
+
+  void browser.storage.local
+    .get(PERMISSION_STORAGE_KEY)
+    .then((items) => {
+      const saved = items[PERMISSION_STORAGE_KEY];
+      if (saved && typeof saved === 'object') {
+        permissionManager.replacePolicy(saved as Partial<ScopePolicyMap>);
+      }
+    })
+    .catch(() => {});
 
   // ── Native Messaging (capability layer) ──────────────────────────────────
   const nativeClient = new NativeMessagingClient({
@@ -152,57 +178,131 @@ export default defineBackground(() => {
 
   const executor = createToolExecutor({
     registry: defaultRegistry,
+    policy: permissionManager.evaluate,
     nativeBridge,
-    toolTimeoutMs: 10_000,
+    toolTimeoutMs: 20_000,
   });
 
   // ── RPC surface ───────────────────────────────────────────────────────────
-  browser.runtime.onMessage.addListener((message: unknown, _sender): Promise<unknown> | undefined => {
-    if (
-      typeof message === 'object' &&
-      message !== null &&
-      (message as { type?: unknown }).type === 'gptpp/hello'
-    ) {
-      const url = (_sender as { tab?: { url?: string } }).tab?.url;
-      if (url && isChatGptUrl(url)) {
-        console.log(`[GPT++] content script active on ${url}`);
+  browser.runtime.onMessage.addListener(
+    (message: unknown, _sender): Promise<unknown> | undefined => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        (message as { type?: unknown }).type === 'gptpp/hello'
+      ) {
+        const url = (_sender as { tab?: { url?: string } }).tab?.url;
+        if (url && isChatGptUrl(url)) {
+          console.log(`[GPT++] content script active on ${url}`);
+        }
+        return undefined;
       }
-      return undefined;
-    }
 
-    if (!isRequest(message)) return undefined;
+      if (!isRequest(message)) return undefined;
 
-    if (message.method === 'tool_execute') {
-      return executor(message.params as never)
-        .then((reply) => createSuccess(message.id, reply))
-        .catch((err: unknown) =>
-          createError(
-            message.id,
-            'RUNTIME_ERROR',
-            err instanceof Error ? err.message : String(err),
-          ),
+      if (message.method === 'tool_execute') {
+        return executor(message.params as never)
+          .then((reply) => createSuccess(message.id, reply))
+          .catch((err: unknown) =>
+            createError(
+              message.id,
+              'RUNTIME_ERROR',
+              err instanceof Error ? err.message : String(err),
+            ),
+          );
+      }
+
+      if (message.method === 'permission_ask') {
+        const p = (message.params ?? {}) as {
+          callId?: string;
+          toolName?: string;
+          risk?: ToolRisk;
+          scope?: PermissionScope;
+          argsSummary?: string;
+        };
+        const resolvedScope =
+          p.scope ?? resolveToolScope({ risk: p.risk ?? 'execute' }) ?? 'EXECUTE';
+        return permissionManager
+          .requestApproval({
+            callId: p.callId ?? 'unknown',
+            toolName: p.toolName ?? 'unknown',
+            scope: resolvedScope,
+            risk: p.risk ?? 'execute',
+            argsSummary: p.argsSummary,
+          })
+          .then((granted) => createSuccess(message.id, { granted }));
+      }
+
+      if (message.method === 'permission_resolve') {
+        const p = (message.params ?? {}) as {
+          id?: string;
+          resolution?: ConsentResolution;
+        };
+        const ok =
+          typeof p.id === 'string' && p.resolution
+            ? permissionManager.resolvePending(p.id, p.resolution)
+            : false;
+        return Promise.resolve(
+          createSuccess(message.id, { ok, state: permissionManager.snapshot() }),
         );
-    }
+      }
 
-    if (message.method === 'native_status') {
-      return ensureNativeConnected(false).then(() =>
-        createSuccess(message.id, nativeStatusPayload()),
-      );
-    }
+      if (message.method === 'permission_cancel_call') {
+        const p = (message.params ?? {}) as { callId?: string };
+        if (p.callId) permissionManager.cancelByCallId(p.callId);
+        return Promise.resolve(createSuccess(message.id, { ok: true }));
+      }
 
-    if (message.method === 'native_reconnect') {
-      return ensureNativeConnected(true).then(() =>
-        createSuccess(message.id, nativeStatusPayload()),
-      );
-    }
+      if (message.method === 'permissions_state') {
+        return Promise.resolve(
+          createSuccess(message.id, permissionManager.snapshot()),
+        );
+      }
 
-    if (message.method === 'tools_list') {
-      return Promise.resolve(
-        createSuccess(message.id, { tools: defaultRegistry.list() }),
-      );
-    }
+      if (message.method === 'permissions_set_scope') {
+        const p = (message.params ?? {}) as {
+          scope?: PermissionScope;
+          decision?: PermissionDecision;
+        };
+        if (p.scope && p.decision) {
+          const updated = permissionManager.setScopeDecision(p.scope, p.decision);
+          return browser.storage.local
+            .set({ [PERMISSION_STORAGE_KEY]: updated })
+            .then(() =>
+              createSuccess(message.id, permissionManager.snapshot()),
+            );
+        }
+        return Promise.resolve(
+          createError(message.id, 'INVALID_PARAMS', 'scope and decision required'),
+        );
+      }
 
-    // Other methods are handled by their senders (content script).
-    return undefined;
-  });
+      if (message.method === 'permissions_reset_session') {
+        permissionManager.resetSessionGrants();
+        return Promise.resolve(
+          createSuccess(message.id, permissionManager.snapshot()),
+        );
+      }
+
+      if (message.method === 'native_status') {
+        return ensureNativeConnected(false).then(() =>
+          createSuccess(message.id, nativeStatusPayload()),
+        );
+      }
+
+      if (message.method === 'native_reconnect') {
+        return ensureNativeConnected(true).then(() =>
+          createSuccess(message.id, nativeStatusPayload()),
+        );
+      }
+
+      if (message.method === 'tools_list') {
+        return Promise.resolve(
+          createSuccess(message.id, { tools: defaultRegistry.list() }),
+        );
+      }
+
+      return undefined;
+    },
+  );
 });

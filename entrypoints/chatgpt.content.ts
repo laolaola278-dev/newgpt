@@ -76,7 +76,26 @@ export default defineContentScript({
       return raw.result as ExecutorReply;
     }
 
-    const agent = new AgentLoopController({ adapter, executeTool: executeViaBackground });
+    async function askPermissionViaBackground(ctx: {
+      toolName: string;
+      risk: string;
+      scope?: string;
+      callId: string;
+      argsSummary?: string;
+    }): Promise<boolean> {
+      const raw: unknown = await browser.runtime.sendMessage(
+        createRequest('permission_ask', ctx),
+      );
+      if (!isResponse(raw) || !raw.ok) return false;
+      return Boolean((raw.result as { granted?: boolean }).granted);
+    }
+
+    const agent = new AgentLoopController({
+      adapter,
+      executeTool: executeViaBackground,
+      resolveAsk: askPermissionViaBackground,
+      limits: { requestTimeoutMs: 60_000 },
+    });
     for (const evt of [
       'state-changed',
       'tool-started',
