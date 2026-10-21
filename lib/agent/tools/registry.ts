@@ -7,6 +7,7 @@ import type { ToolDefinition } from './types';
 import { demoEchoTool } from './demo-echo';
 import { nativeEchoTool } from './native-echo';
 import { filesystemTools } from './fs';
+import { gitTools } from './git';
 import { shellExecTool } from './shell';
 
 export class ToolRegistry {
@@ -52,3 +53,6 @@ for (const tool of filesystemTools) {
   defaultRegistry.register(tool);
 }
 defaultRegistry.register(shellExecTool);
+for (const tool of gitTools) {
+  defaultRegistry.register(tool);
+}

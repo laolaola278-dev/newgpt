@@ -111,6 +111,11 @@ export default defineBackground(() => {
     'fs_write_file',
     'fs_search',
     'shell_exec',
+    'git_status',
+    'git_diff',
+    'git_log',
+    'git_stage',
+    'git_commit',
   ]);
 
   async function readConfiguredWorkspace(): Promise<string | null> {
@@ -133,21 +138,26 @@ export default defineBackground(() => {
             },
           };
         }
-        const pathArg =
-          typeof args['path'] === 'string'
-            ? args['path']
-            : typeof args['cwd'] === 'string'
-              ? args['cwd']
-              : '.';
-        const confinement = resolveWithinWorkspace(wsRoot, pathArg);
-        if (!confinement.ok) {
-          return {
-            status: 'error',
-            error: {
-              code: 'PERMISSION_DENIED',
-              message: confinement.message,
-            },
-          };
+        const candidatePaths: string[] = [];
+        if (typeof args['path'] === 'string') candidatePaths.push(args['path']);
+        if (typeof args['cwd'] === 'string') candidatePaths.push(args['cwd']);
+        if (Array.isArray(args['paths'])) {
+          for (const entry of args['paths']) {
+            if (typeof entry === 'string') candidatePaths.push(entry);
+          }
+        }
+        if (candidatePaths.length === 0) candidatePaths.push('.');
+        for (const p of candidatePaths) {
+          const confinement = resolveWithinWorkspace(wsRoot, p);
+          if (!confinement.ok) {
+            return {
+              status: 'error',
+              error: {
+                code: 'PERMISSION_DENIED',
+                message: confinement.message,
+              },
+            };
+          }
         }
         outboundArgs = { ...args, workspaceRoot: wsRoot };
       }

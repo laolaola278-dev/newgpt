@@ -11,7 +11,7 @@ use crate::errors::{
     error_response, success_response, INVALID_ARGUMENTS, PROTOCOL_VERSION_MISMATCH,
     UNKNOWN_METHOD,
 };
-use crate::tools::{echo, fs as fs_tools, shell};
+use crate::tools::{echo, fs as fs_tools, git as git_tools, shell};
 
 pub const HOST_NAME: &str = "com.gptpp.native";
 pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -24,6 +24,11 @@ pub const CAPABILITIES: &[&str] = &[
     fs_tools::WRITE_FILE_NAME,
     fs_tools::SEARCH_NAME,
     shell::NAME,
+    git_tools::STATUS_NAME,
+    git_tools::DIFF_NAME,
+    git_tools::LOG_NAME,
+    git_tools::STAGE_NAME,
+    git_tools::COMMIT_NAME,
 ];
 
 fn require_params(request: &Value) -> Result<&Value, &'static str> {
@@ -71,6 +76,11 @@ pub fn dispatch(request: &Value) -> Result<Value, ()> {
         m if m == fs_tools::WRITE_FILE_NAME => run_tool(fs_tools::write_file),
         m if m == fs_tools::SEARCH_NAME => run_tool(fs_tools::search),
         m if m == shell::NAME => run_tool(shell::run),
+        m if m == git_tools::STATUS_NAME => run_tool(git_tools::status),
+        m if m == git_tools::DIFF_NAME => run_tool(git_tools::diff),
+        m if m == git_tools::LOG_NAME => run_tool(git_tools::log),
+        m if m == git_tools::STAGE_NAME => run_tool(git_tools::stage),
+        m if m == git_tools::COMMIT_NAME => run_tool(git_tools::commit),
         other => Ok(error_response(
             &id,
             UNKNOWN_METHOD,
