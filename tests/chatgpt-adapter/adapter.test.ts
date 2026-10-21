@@ -192,6 +192,34 @@ describe('Message detection', () => {
     expect(msgs[0]?.id).toMatch(/^assistant-/);
     expect(adapter.getMessages()[0]?.id).toBe(msgs[0]!.id);
   });
+
+  it('marks only the latest assistant message as streaming and resolves split wrapper attributes', async () => {
+    const { adapter } = setup(120);
+    mountPage({
+      messages: [
+        { role: 'user', id: 'u1', text: 'first' },
+        { role: 'assistant', id: 'a1', text: 'first answer' },
+        { role: 'user', id: 'u2', text: 'second' },
+      ],
+    });
+    // Add nested outer role + inner data-message-id structure.
+    document.getElementById('thread')!.insertAdjacentHTML(
+      'beforeend',
+      '<div data-message-author-role="assistant"><div data-message-id="nested-a2">streaming answer</div></div>',
+    );
+    setGenerating(true);
+    adapter.start();
+    pulseObserver();
+
+    await flush();
+    const msgs = adapter.getMessages();
+    expect(msgs).toHaveLength(4);
+    expect(msgs[1]?.streaming).toBe(false);
+    expect(msgs[3]?.role).toBe('assistant');
+    expect(msgs[3]?.id).toBe('nested-a2');
+    expect(msgs[3]?.streaming).toBe(true);
+    adapter.dispose();
+  });
 });
 
 describe('Streaming detection', () => {
